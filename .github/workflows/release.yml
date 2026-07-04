@@ -116,6 +116,9 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Enable updater artifacts for release
+        run: |
+          node -e "const fs = require('fs'); const path = 'src-tauri/tauri.conf.json'; const conf = JSON.parse(fs.readFileSync(path, 'utf8')); conf.bundle ??= {}; conf.bundle.createUpdaterArtifacts = true; fs.writeFileSync(path, JSON.stringify(conf, null, 2) + '\n');"
       - name: Build Windows bundle
         if: matrix.platform == 'windows-latest'
         uses: tauri-apps/tauri-action@v1
