@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Cable,
@@ -42,6 +42,7 @@ export function AppShell() {
   const activeSection = useAppStore((state) => state.activeSection);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const store = useDeviceStore();
+  const hydrated = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -60,15 +61,21 @@ export function AppShell() {
       actions.setPorts(ports);
       actions.setPresets(presets);
       actions.setDeviceInfo(info);
+      // Only persist presets once the stored ones are loaded, otherwise the
+      // mount-time save effect races boot and can overwrite them with [].
+      hydrated.current = true;
       unlisteners.push(await api.onReading(actions.pushReading));
       unlisteners.push(
         await api.onStatus((event) => {
-          actions.setDeviceInfo({
-            connected: event.connected,
-            modelName: event.model ?? undefined,
-            decimalPoint: info.decimalPoint || 1,
-            scaleFactor: info.scaleFactor || 1,
-          });
+          // The status event only carries connected/model, so merge with the
+          // current device info to keep the decimal point / scale / model code
+          // that connect() resolved instead of resetting them to defaults.
+          const current = useDeviceStore.getState().deviceInfo;
+          actions.setDeviceInfo(
+            event.connected
+              ? { ...current, connected: true, modelName: event.model ?? current.modelName }
+              : { connected: false, decimalPoint: 1, scaleFactor: 1 },
+          );
         }),
       );
       unlisteners.push(await api.onError(actions.setBackendError));
@@ -83,6 +90,7 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
+    if (!hydrated.current) return;
     void saveCurvePresets(store.presets);
   }, [store.presets]);
 
@@ -617,8 +625,11 @@ function formatValue(value: number | null | undefined, suffix: string) {
 }
 
 function readableError(error: unknown) {
-  if (error && typeof error === "object" && "message" in error) {
-    return String((error as { message?: unknown }).message);
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const record = error as { message?: unknown; kind?: unknown };
+    if (record.message != null && record.message !== "") return String(record.message);
+    if (typeof record.kind === "string") return record.kind;
   }
   return String(error);
 }
