@@ -3,3 +3,7 @@
 ## v0.1.0
 
 - Initial Tauri v2 + React/TypeScript + Rust implementation.
+
+## v0.2.0
+
+- Automated release from Conventional Commits.
