@@ -11,3 +11,7 @@
 ## v0.3.0
 
 - Automated release from Conventional Commits.
+
+## v0.3.1
+
+- Automated release from Conventional Commits.
