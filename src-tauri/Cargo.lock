@@ -5734,7 +5734,7 @@ dependencies = [
 
 [[package]]
 name = "yudian-ai-tool"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "async-trait",
  "serde",
