@@ -1,0 +1,34 @@
+{
+  "scenario": "normal",
+  "validationLimits": {
+    "tempMin": -200,
+    "tempMax": 1800,
+    "pidPMax": 9999.9,
+    "pidIMax": 9999,
+    "pidDMax": 999.9,
+    "segmentMaxCount": 50,
+    "slaveAddrMin": 1,
+    "slaveAddrMax": 80,
+    "refreshIntervalMinMs": 200
+  },
+  "ports": [{ "name": "COM_MOCK", "description": "Mock RS-485 USB 串口" }],
+  "deviceInfo": {
+    "connected": true,
+    "modelCode": 5167,
+    "modelName": "AI-516P",
+    "decimalPoint": 1,
+    "scaleFactor": 1
+  },
+  "pid": { "p": 12, "i": 300, "d": 4.5 },
+  "segments": [
+    { "temperature": 100, "minutes": 20 },
+    { "temperature": 150, "minutes": 30 },
+    { "temperature": 80, "minutes": 15 }
+  ],
+  "readingStream": [
+    { "pv": 100.5, "sv": 100, "mv": 50 },
+    { "pv": 101.2, "sv": 100, "mv": 48 },
+    { "pv": 99.8, "sv": 100, "mv": 53 },
+    { "pv": 100.1, "sv": 100, "mv": 51 }
+  ]
+}

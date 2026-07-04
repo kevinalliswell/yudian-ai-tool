@@ -1,0 +1,4 @@
+{
+  "scenario": "bad-data",
+  "notes": "Contains sentinel and dPt fallback cases for protocol and actor tests."
+}
