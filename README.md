@@ -67,3 +67,5 @@ Release workflow 需要以下 GitHub Secrets：
 
 `src-tauri/tauri.conf.json` 里只存 updater 公钥；私钥不要入库。Release workflow 会在打 tag 前把 updater
 endpoint 写成当前 `GITHUB_REPOSITORY` 对应的 GitHub Release 地址。
+
+如果未配置 Apple 证书相关 secrets，Release workflow 会产出未签名 macOS 包；配置后自动走签名构建。
