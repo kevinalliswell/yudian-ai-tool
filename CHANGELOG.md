@@ -31,3 +31,7 @@
 ## v0.3.5
 
 - Automated release from Conventional Commits.
+
+## v0.3.6
+
+- Automated release from Conventional Commits.
