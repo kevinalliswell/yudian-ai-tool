@@ -285,13 +285,25 @@ impl DeviceActor {
     async fn write_pid(&mut self, values: PidValues) -> Result<(), AppError> {
         validate::validate_pid(values.p, values.i, values.d)?;
         let scale = self.scale();
-        let p = convert::write_scaled(values.p, scale)?;
-        let i = convert::to_uint16(values.i as i32, "PID I")?;
-        let d = convert::d_seconds_to_raw(values.d)?;
+        let previous = self.read_pid().await?;
+        let encoded = encode_pid(&values, scale)?;
+        let encoded_previous = encode_pid(&previous, scale)?;
         let backend = self.backend()?;
-        backend.write_register(registers::P, p).await?;
-        backend.write_register(registers::I, i).await?;
-        backend.write_register(registers::D, d).await
+
+        match write_pid_transaction(backend, encoded).await {
+            Ok(()) => Ok(()),
+            Err(write_error) => {
+                warn!("PID write failed, restoring previous values: {write_error}");
+                match write_pid_transaction(backend, encoded_previous).await {
+                    Ok(()) => Err(AppError::Backend(format!(
+                        "PID write failed: {write_error}; rollback succeeded"
+                    ))),
+                    Err(rollback_error) => Err(AppError::Backend(format!(
+                        "PID write failed: {write_error}; rollback failed: {rollback_error}"
+                    ))),
+                }
+            }
+        }
     }
 
     async fn set_run_status(&mut self, status: RunStatus) -> Result<(), AppError> {
@@ -375,6 +387,37 @@ impl DeviceActor {
             }
         }
     }
+}
+
+fn encode_pid(
+    values: &PidValues,
+    scale: convert::ScaleConfig,
+) -> Result<(u16, u16, u16), AppError> {
+    Ok((
+        convert::write_scaled(values.p, scale)?,
+        convert::to_uint16(values.i as i32, "PID I")?,
+        convert::d_seconds_to_raw(values.d)?,
+    ))
+}
+
+async fn write_pid_transaction(
+    backend: &mut Box<dyn DeviceBackend>,
+    encoded: (u16, u16, u16),
+) -> Result<(), AppError> {
+    backend.write_register(registers::P, encoded.0).await?;
+    backend.write_register(registers::I, encoded.1).await?;
+    backend.write_register(registers::D, encoded.2).await?;
+
+    let values = backend.read_registers(registers::P, 3).await?;
+    if values.first().copied() != Some(encoded.0)
+        || values.get(1).copied() != Some(encoded.1)
+        || values.get(2).copied() != Some(encoded.2)
+    {
+        return Err(AppError::InvalidData(
+            "PID read-back verification failed".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn encode_segments(
@@ -466,6 +509,25 @@ mod tests {
         assert!(info.connected);
         assert_eq!(info.model_name.as_deref(), Some("AI-516P"));
         assert_eq!(info.decimal_point, 1);
+    }
+
+    #[tokio::test]
+    async fn pid_write_round_trip_uses_mock_backend() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        handle.connect(mock_connection()).await.unwrap();
+        handle
+            .write_pid(PidValues {
+                p: 12.5,
+                i: 240,
+                d: 3.0,
+            })
+            .await
+            .unwrap();
+
+        let actual = handle.read_pid().await.unwrap();
+        assert_eq!(actual.p, 12.5);
+        assert_eq!(actual.i, 240);
+        assert_eq!(actual.d, 3.0);
     }
 
     #[tokio::test]
