@@ -26,6 +26,8 @@ import {
   createSlaveAddressSchema,
   createTemperatureSchema,
 } from "@/lib/validation";
+import { useShallow } from "zustand/react/shallow";
+
 import { type ShellSection, useAppStore } from "@/stores/appStore";
 import { useDeviceStore } from "@/stores/deviceStore";
 
@@ -41,7 +43,12 @@ const sections = Object.keys(sectionIcons) as ShellSection[];
 export function AppShell() {
   const activeSection = useAppStore((state) => state.activeSection);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
-  const store = useDeviceStore();
+  // Subscribe only to what the shell renders so live readings (pushed ~1×/s)
+  // don't re-render the shell and its active panel.
+  const connected = useDeviceStore((state) => state.deviceInfo.connected);
+  const modelName = useDeviceStore((state) => state.deviceInfo.modelName);
+  const error = useDeviceStore((state) => state.error);
+  const presets = useDeviceStore((state) => state.presets);
   const hydrated = useRef(false);
 
   useEffect(() => {
@@ -91,8 +98,8 @@ export function AppShell() {
 
   useEffect(() => {
     if (!hydrated.current) return;
-    void saveCurvePresets(store.presets);
-  }, [store.presets]);
+    void saveCurvePresets(presets);
+  }, [presets]);
 
   const Icon = sectionIcons[activeSection];
 
@@ -105,8 +112,8 @@ export function AppShell() {
             <p className="mt-1 text-sm text-muted-foreground">{zhCN.subtitle}</p>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant={store.deviceInfo.connected ? "default" : "outline"}>
-              {store.deviceInfo.connected ? store.deviceInfo.modelName || "已连接" : "未连接"}
+            <Badge variant={connected ? "default" : "outline"}>
+              {connected ? modelName || "已连接" : "未连接"}
             </Badge>
             <Badge variant="secondary">{runtimeLabel}</Badge>
           </div>
@@ -139,7 +146,7 @@ export function AppShell() {
                   {zhCN.sections[activeSection]}
                 </h2>
               </div>
-              {store.error ? <Badge variant="outline">{store.error}</Badge> : null}
+              {error ? <Badge variant="outline">{error}</Badge> : null}
             </div>
 
             {activeSection === "connection" && <ConnectionPanel />}
@@ -154,7 +161,19 @@ export function AppShell() {
 }
 
 function ConnectionPanel() {
-  const store = useDeviceStore();
+  const store = useDeviceStore(
+    useShallow((state) => ({
+      limits: state.limits,
+      connectionConfig: state.connectionConfig,
+      ports: state.ports,
+      deviceInfo: state.deviceInfo,
+      setPorts: state.setPorts,
+      setError: state.setError,
+      setConnectionConfig: state.setConnectionConfig,
+      setDeviceInfo: state.setDeviceInfo,
+      resetConnectionData: state.resetConnectionData,
+    })),
+  );
   const [busy, setBusy] = useState(false);
 
   async function refreshPorts() {
@@ -271,7 +290,8 @@ function ConnectionPanel() {
 }
 
 function StatusBox() {
-  const { deviceInfo, latestReading } = useDeviceStore();
+  const deviceInfo = useDeviceStore((state) => state.deviceInfo);
+  const latestReading = useDeviceStore((state) => state.latestReading);
   return (
     <div className="rounded-md border bg-background p-4">
       <p className="text-sm text-muted-foreground">设备状态</p>
@@ -287,7 +307,9 @@ function StatusBox() {
 }
 
 function MonitorPanel() {
-  const { latestReading, readings, deviceInfo } = useDeviceStore();
+  const latestReading = useDeviceStore((state) => state.latestReading);
+  const readings = useDeviceStore((state) => state.readings);
+  const deviceInfo = useDeviceStore((state) => state.deviceInfo);
   return (
     <div className="grid gap-5">
       <div className="grid gap-3 md:grid-cols-3">
@@ -307,7 +329,17 @@ function MonitorPanel() {
 }
 
 function ParametersPanel() {
-  const store = useDeviceStore();
+  const store = useDeviceStore(
+    useShallow((state) => ({
+      limits: state.limits,
+      deviceInfo: state.deviceInfo,
+      pid: state.pid,
+      setpoint: state.setpoint,
+      setPid: state.setPid,
+      setSetpoint: state.setSetpoint,
+      setError: state.setError,
+    })),
+  );
   const [pidDraft, setPidDraft] = useState<PidValues>(store.pid);
   const [setpointDraft, setSetpointDraft] = useState(store.setpoint);
 
@@ -439,7 +471,17 @@ function ParametersPanel() {
 }
 
 function CurvesPanel() {
-  const store = useDeviceStore();
+  const store = useDeviceStore(
+    useShallow((state) => ({
+      limits: state.limits,
+      deviceInfo: state.deviceInfo,
+      curve: state.curve,
+      presets: state.presets,
+      setCurve: state.setCurve,
+      setPresets: state.setPresets,
+      setError: state.setError,
+    })),
+  );
   const totalMinutes = useMemo(
     () => store.curve.reduce((sum, segment) => sum + segment.minutes, 0),
     [store.curve],
