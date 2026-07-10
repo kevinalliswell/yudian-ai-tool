@@ -355,37 +355,89 @@ impl DeviceActor {
     async fn download_curve(&mut self, segments: Vec<Segment>) -> Result<(), AppError> {
         validate::validate_segments(&segments)?;
         let scale = self.scale();
-        let encoded_segments = segments
-            .iter()
-            .map(|segment| {
-                Ok((
-                    convert::write_scaled(segment.temperature, scale)?,
-                    convert::to_uint16(segment.minutes, "segment minutes")?,
-                ))
-            })
-            .collect::<Result<Vec<_>, AppError>>()?;
+        let previous_segments = self.upload_curve().await?;
+        let encoded_segments = encode_segments(&segments, scale)?;
+        let encoded_previous = encode_segments(&previous_segments, scale)?;
         let backend = self.backend()?;
-        backend
-            .write_register(
-                registers::PNO,
-                convert::to_uint16(segments.len() as i32, "Pno")?,
-            )
-            .await?;
-        for (index, (temperature, minutes)) in encoded_segments.iter().enumerate() {
-            let base = registers::SP_START + index as u16 * 2;
-            let result = async {
-                backend.write_register(base, *temperature).await?;
-                backend.write_register(base + 1, *minutes).await
-            }
-            .await;
-            sleep(Duration::from_millis(50)).await;
-            if let Err(err) = result {
-                warn!("curve segment {index} write failed: {err}");
-                return Err(err);
+
+        match write_curve_transaction(backend, &encoded_segments).await {
+            Ok(()) => Ok(()),
+            Err(write_error) => {
+                warn!("curve download failed, restoring previous curve: {write_error}");
+                match write_curve_transaction(backend, &encoded_previous).await {
+                    Ok(()) => Err(AppError::Backend(format!(
+                        "curve download failed: {write_error}; rollback succeeded"
+                    ))),
+                    Err(rollback_error) => Err(AppError::Backend(format!(
+                        "curve download failed: {write_error}; rollback failed: {rollback_error}"
+                    ))),
+                }
             }
         }
-        Ok(())
     }
+}
+
+fn encode_segments(
+    segments: &[Segment],
+    scale: convert::ScaleConfig,
+) -> Result<Vec<(u16, u16)>, AppError> {
+    segments
+        .iter()
+        .map(|segment| {
+            Ok((
+                convert::write_scaled(segment.temperature, scale)?,
+                convert::to_uint16(segment.minutes, "segment minutes")?,
+            ))
+        })
+        .collect()
+}
+
+async fn write_curve_transaction(
+    backend: &mut Box<dyn DeviceBackend>,
+    encoded_segments: &[(u16, u16)],
+) -> Result<(), AppError> {
+    for (index, (temperature, minutes)) in encoded_segments.iter().enumerate() {
+        let base = registers::SP_START + index as u16 * 2;
+        backend.write_register(base, *temperature).await?;
+        backend.write_register(base + 1, *minutes).await?;
+        sleep(Duration::from_millis(50)).await;
+
+        let values = backend.read_registers(base, 2).await?;
+        if values.first().copied() != Some(*temperature)
+            || values.get(1).copied() != Some(*minutes)
+        {
+            return Err(AppError::InvalidData(format!(
+                "curve segment {index} read-back mismatch"
+            )));
+        }
+    }
+
+    let pno = convert::to_uint16(encoded_segments.len() as i32, "Pno")?;
+    backend.write_register(registers::PNO, pno).await?;
+    let committed_pno = backend
+        .read_registers(registers::PNO, 1)
+        .await?
+        .first()
+        .copied();
+    if committed_pno != Some(pno) {
+        return Err(AppError::InvalidData(
+            "curve PNO read-back mismatch".to_string(),
+        ));
+    }
+
+    for (index, (temperature, minutes)) in encoded_segments.iter().enumerate() {
+        let base = registers::SP_START + index as u16 * 2;
+        let values = backend.read_registers(base, 2).await?;
+        if values.first().copied() != Some(*temperature)
+            || values.get(1).copied() != Some(*minutes)
+        {
+            return Err(AppError::InvalidData(format!(
+                "curve segment {index} final verification mismatch"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn unix_ms() -> i64 {
@@ -399,17 +451,18 @@ fn unix_ms() -> i64 {
 mod tests {
     use super::*;
 
+    fn mock_connection() -> ConnectionConfig {
+        ConnectionConfig {
+            port: "MOCK".to_string(),
+            slave_addr: 1,
+            baudrate: 9600,
+        }
+    }
+
     #[tokio::test]
     async fn mock_connect_and_read_info() {
         let handle = DeviceHandle::spawn(BackendMode::Mock);
-        let info = handle
-            .connect(ConnectionConfig {
-                port: "MOCK".to_string(),
-                slave_addr: 1,
-                baudrate: 9600,
-            })
-            .await
-            .unwrap();
+        let info = handle.connect(mock_connection()).await.unwrap();
         assert!(info.connected);
         assert_eq!(info.model_name.as_deref(), Some("AI-516P"));
         assert_eq!(info.decimal_point, 1);
@@ -418,14 +471,7 @@ mod tests {
     #[tokio::test]
     async fn curve_round_trip_uses_mock_backend() {
         let handle = DeviceHandle::spawn(BackendMode::Mock);
-        handle
-            .connect(ConnectionConfig {
-                port: "MOCK".to_string(),
-                slave_addr: 1,
-                baudrate: 9600,
-            })
-            .await
-            .unwrap();
+        handle.connect(mock_connection()).await.unwrap();
         let expected = vec![
             Segment {
                 temperature: 120.0,
@@ -441,16 +487,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn curve_transaction_can_replace_a_longer_curve_with_a_shorter_curve() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        handle.connect(mock_connection()).await.unwrap();
+        let original = vec![
+            Segment {
+                temperature: 100.0,
+                minutes: 10,
+            },
+            Segment {
+                temperature: 200.0,
+                minutes: 20,
+            },
+            Segment {
+                temperature: 300.0,
+                minutes: 30,
+            },
+        ];
+        let replacement = vec![Segment {
+            temperature: 150.0,
+            minutes: 15,
+        }];
+
+        handle.download_curve(original).await.unwrap();
+        handle.download_curve(replacement.clone()).await.unwrap();
+
+        assert_eq!(handle.upload_curve().await.unwrap(), replacement);
+    }
+
+    #[tokio::test]
     async fn mock_reading_contains_live_values() {
         let handle = DeviceHandle::spawn(BackendMode::Mock);
-        handle
-            .connect(ConnectionConfig {
-                port: "MOCK".to_string(),
-                slave_addr: 1,
-                baudrate: 9600,
-            })
-            .await
-            .unwrap();
+        handle.connect(mock_connection()).await.unwrap();
         let reading = handle.read_reading().await.unwrap();
         assert_eq!(reading.pv, Some(100.5));
         assert_eq!(reading.sv, Some(100.0));
@@ -460,14 +528,7 @@ mod tests {
     #[tokio::test]
     async fn offline_backend_returns_structured_error() {
         let handle = DeviceHandle::spawn(BackendMode::MockOffline);
-        let err = handle
-            .connect(ConnectionConfig {
-                port: "MOCK".to_string(),
-                slave_addr: 1,
-                baudrate: 9600,
-            })
-            .await
-            .unwrap_err();
+        let err = handle.connect(mock_connection()).await.unwrap_err();
         assert!(matches!(err, AppError::Timeout));
     }
 }
