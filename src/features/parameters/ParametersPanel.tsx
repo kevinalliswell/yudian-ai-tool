@@ -1,0 +1,243 @@
+import { useState } from "react";
+import { Play, Square } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
+
+import { Button } from "@/components/ui/button";
+import { zhCN } from "@/i18n/zh-CN";
+import { api } from "@/lib/api";
+import type { PidValues, RunStatus } from "@/lib/types";
+import { createPidSchema, createTemperatureSchema } from "@/lib/validation";
+import { useDeviceStore } from "@/stores/deviceStore";
+
+import { readableError } from "@/features/shared/display";
+
+export function ParametersPanel() {
+  const store = useDeviceStore(
+    useShallow((state) => ({
+      limits: state.limits,
+      deviceInfo: state.deviceInfo,
+      parameterSync: state.parameterSync,
+      pid: state.pid,
+      setpoint: state.setpoint,
+      curve: state.curve,
+      setPid: state.setPid,
+      setSetpoint: state.setSetpoint,
+      setParameterSync: state.setParameterSync,
+      setError: state.setError,
+    })),
+  );
+  const [pidDraft, setPidDraft] = useState<PidValues>(store.pid);
+  const [setpointDraft, setSetpointDraft] = useState(store.setpoint);
+
+  async function readParameters() {
+    store.setParameterSync("syncing");
+    try {
+      const [setpoint, pid] = await Promise.all([api.readSetpoint(), api.readPid()]);
+      store.setSetpoint(setpoint);
+      store.setPid(pid);
+      setSetpointDraft(setpoint);
+      setPidDraft(pid);
+      store.setParameterSync("synced");
+      store.setError(undefined);
+    } catch (error) {
+      store.setParameterSync("failed");
+      store.setError(`参数同步失败：${readableError(error)}`);
+    }
+  }
+
+  async function readPid() {
+    try {
+      const values = await api.readPid();
+      store.setPid(values);
+      setPidDraft(values);
+      store.setError(undefined);
+    } catch (error) {
+      store.setError(readableError(error));
+    }
+  }
+
+  async function writeSetpoint() {
+    if (!store.limits) return;
+    if (!createTemperatureSchema(store.limits).safeParse(setpointDraft).success) {
+      store.setError("给定值超出范围");
+      return;
+    }
+    try {
+      if (store.parameterSync !== "synced") {
+        store.setError("参数尚未同步，不能写入");
+        return;
+      }
+      if (!store.deviceInfo.writeEnabled) {
+        store.setError("设备为只读模式，DPT 读取失败，不能写入");
+        return;
+      }
+      await api.writeSetpoint(setpointDraft);
+      store.setSetpoint(setpointDraft);
+      store.setError(undefined);
+    } catch (error) {
+      store.setError(readableError(error));
+    }
+  }
+
+  async function writePid() {
+    if (!store.limits) return;
+    if (!createPidSchema(store.limits).safeParse(pidDraft).success) {
+      store.setError("PID 参数超出范围");
+      return;
+    }
+    try {
+      if (store.parameterSync !== "synced") {
+        store.setError("参数尚未同步，不能写入");
+        return;
+      }
+      if (!store.deviceInfo.writeEnabled) {
+        store.setError("设备为只读模式，DPT 读取失败，不能写入");
+        return;
+      }
+      await api.writePid(pidDraft);
+      store.setPid(pidDraft);
+      store.setError(undefined);
+    } catch (error) {
+      store.setError(readableError(error));
+    }
+  }
+
+  async function setRunStatus(status: RunStatus) {
+    if (status === "run") {
+      const totalMinutes = store.curve.reduce((sum, segment) => sum + segment.minutes, 0);
+      const confirmed = window.confirm(
+        `${zhCN.runConfirmation.title}\n${zhCN.runConfirmation.summary(store.curve.length, totalMinutes)}`,
+      );
+      if (!confirmed) return;
+    }
+    try {
+      await api.setRunStatus(status);
+      store.setError(undefined);
+    } catch (error) {
+      store.setError(readableError(error));
+    }
+  }
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-2">
+      <div className="flex items-center justify-between gap-3 xl:col-span-2">
+        <div>
+          <p className="font-medium">设备参数同步</p>
+          <p className="text-sm text-muted-foreground">
+            {store.parameterSync === "synced"
+              ? "已读取当前设备值"
+              : store.parameterSync === "syncing"
+                ? "正在读取设备值"
+                : store.parameterSync === "failed"
+                  ? "读取失败，请重试"
+                  : "尚未读取设备值"}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          onClick={readParameters}
+          disabled={!store.deviceInfo.connected || store.parameterSync === "syncing"}
+        >
+          读取当前值
+        </Button>
+      </div>
+      <div className="rounded-md border bg-background p-4">
+        <p className="mb-3 font-medium">给定值 SP1</p>
+        <div className="flex gap-2">
+          <input
+            className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3"
+            type="number"
+            value={store.parameterSync === "synced" ? setpointDraft : ""}
+            disabled={
+              !store.deviceInfo.connected ||
+              !store.deviceInfo.writeEnabled ||
+              store.parameterSync !== "synced"
+            }
+            onChange={(event) => setSetpointDraft(Number(event.target.value))}
+          />
+          <Button
+            onClick={writeSetpoint}
+            disabled={
+              !store.deviceInfo.connected ||
+              !store.deviceInfo.writeEnabled ||
+              store.parameterSync !== "synced"
+            }
+          >
+            设置
+          </Button>
+        </div>
+      </div>
+      <div className="rounded-md border bg-background p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-medium">PID 参数</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={readPid}
+            disabled={!store.deviceInfo.connected}
+          >
+            读取
+          </Button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {(["p", "i", "d"] as const).map((key) => (
+            <label key={key} className="grid gap-1 text-sm uppercase">
+              {key}
+              <input
+                className="h-10 rounded-md border bg-background px-3"
+                type="number"
+                value={store.parameterSync === "synced" ? pidDraft[key] : ""}
+                disabled={
+                  !store.deviceInfo.connected ||
+                  !store.deviceInfo.writeEnabled ||
+                  store.parameterSync !== "synced"
+                }
+                onChange={(event) =>
+                  setPidDraft({ ...pidDraft, [key]: Number(event.target.value) })
+                }
+              />
+            </label>
+          ))}
+        </div>
+        <Button
+          className="mt-3"
+          onClick={writePid}
+          disabled={
+            !store.deviceInfo.connected ||
+            !store.deviceInfo.writeEnabled ||
+            store.parameterSync !== "synced"
+          }
+        >
+          写入 PID
+        </Button>
+      </div>
+      <div className="rounded-md border bg-background p-4 xl:col-span-2">
+        <p className="mb-3 font-medium">运行状态</p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            onClick={() => setRunStatus("run")}
+            disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
+          >
+            <Play className="mr-2 h-4 w-4" />
+            运行
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setRunStatus("hold")}
+            disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
+          >
+            保持
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setRunStatus("stop")}
+            disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
+          >
+            <Square className="mr-2 h-4 w-4" />
+            停止
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
