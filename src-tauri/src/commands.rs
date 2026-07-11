@@ -175,9 +175,8 @@ fn emit_reading(app: &AppHandle, reading: &Reading) {
 
 fn monitor_backoff(interval: Duration, consecutive_failures: u32) -> Duration {
     let shift = consecutive_failures.saturating_sub(1).min(3);
-    interval
-        .saturating_mul(1u32 << shift)
-        .min(Duration::from_secs(30))
+    let cap = interval.max(Duration::from_secs(30));
+    interval.saturating_mul(1u32 << shift).min(cap)
 }
 
 fn should_emit_monitor_error(consecutive_failures: u32) -> bool {
@@ -210,6 +209,10 @@ mod tests {
         assert_eq!(
             monitor_backoff(Duration::from_secs(10), 3),
             Duration::from_secs(30)
+        );
+        assert_eq!(
+            monitor_backoff(Duration::from_secs(60), 2),
+            Duration::from_secs(60)
         );
     }
 
