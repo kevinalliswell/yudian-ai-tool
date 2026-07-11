@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import type { ValidationLimits } from "@/lib/types";
 
+const DEFAULT_SEGMENT_MINUTES_MAX = 65535;
+
 export function createSlaveAddressSchema(limits: ValidationLimits) {
   return z.number().int().min(limits.slaveAddrMin).max(limits.slaveAddrMax);
 }
@@ -19,11 +21,12 @@ export function createPidSchema(limits: ValidationLimits) {
 }
 
 export function createCurveSchema(limits: ValidationLimits) {
+  const segmentMinutesMax = limits.segmentMinutesMax ?? DEFAULT_SEGMENT_MINUTES_MAX;
   return z
     .array(
       z.object({
         temperature: createTemperatureSchema(limits),
-        minutes: z.number().finite().int().min(0).max(limits.segmentMinutesMax),
+        minutes: z.number().finite().int().min(0).max(segmentMinutesMax),
       }),
     )
     .min(1)
