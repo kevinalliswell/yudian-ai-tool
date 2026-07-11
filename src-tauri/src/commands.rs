@@ -100,21 +100,51 @@ pub async fn start_monitoring(
     let interval = Duration::from_millis(interval_ms.max(min_interval) as u64);
     let device = state.device.clone();
     let handle = tauri::async_runtime::spawn(async move {
+        let mut consecutive_failures: u32 = 0;
         loop {
             match device.read_reading().await {
-                Ok(reading) => emit_reading(&app, &reading),
+                Ok(reading) => {
+                    if consecutive_failures > 0 {
+                        let _ = app.emit(
+                            "device://error",
+                            ErrorEvent {
+                                scope: "monitoring".to_string(),
+                                message: "monitoring recovered".to_string(),
+                            },
+                        );
+                        consecutive_failures = 0;
+                    }
+                    emit_reading(&app, &reading);
+                    sleep(interval).await;
+                }
                 Err(err) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                     error!("monitoring read failed: {err}");
-                    let _ = app.emit(
-                        "device://error",
-                        ErrorEvent {
-                            scope: "monitoring".to_string(),
-                            message: err.to_string(),
-                        },
-                    );
+                    if should_emit_monitor_error(consecutive_failures) {
+                        let _ = app.emit(
+                            "device://error",
+                            ErrorEvent {
+                                scope: "monitoring".to_string(),
+                                message: monitor_error_message(consecutive_failures, &err),
+                            },
+                        );
+                    }
+                    if consecutive_failures >= 5 {
+                        if let Err(disconnect_error) = device.disconnect().await {
+                            error!("monitoring disconnect failed: {disconnect_error}");
+                        }
+                        let _ = app.emit(
+                            "device://status",
+                            StatusEvent {
+                                connected: false,
+                                model: None,
+                            },
+                        );
+                        break;
+                    }
+                    sleep(monitor_backoff(interval, consecutive_failures)).await;
                 }
             }
-            sleep(interval).await;
         }
     });
     *state.monitor.lock().await = Some(handle);
@@ -141,4 +171,55 @@ fn emit_status(app: &AppHandle, info: &DeviceInfo) {
 
 fn emit_reading(app: &AppHandle, reading: &Reading) {
     let _ = app.emit("device://reading", reading);
+}
+
+fn monitor_backoff(interval: Duration, consecutive_failures: u32) -> Duration {
+    let shift = consecutive_failures.saturating_sub(1).min(3);
+    interval
+        .saturating_mul(1u32 << shift)
+        .min(Duration::from_secs(30))
+}
+
+fn should_emit_monitor_error(consecutive_failures: u32) -> bool {
+    consecutive_failures <= 3 || consecutive_failures == 5
+}
+
+fn monitor_error_message(consecutive_failures: u32, error: &AppError) -> String {
+    match consecutive_failures {
+        3 => format!(
+            "monitoring connection unstable after {consecutive_failures} consecutive failures: {error}"
+        ),
+        5 => "monitoring stopped after 5 consecutive failures".to_string(),
+        _ => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitor_backoff_doubles_and_caps_at_thirty_seconds() {
+        let interval = Duration::from_secs(1);
+
+        assert_eq!(monitor_backoff(interval, 1), Duration::from_secs(1));
+        assert_eq!(monitor_backoff(interval, 2), Duration::from_secs(2));
+        assert_eq!(monitor_backoff(interval, 3), Duration::from_secs(4));
+        assert_eq!(monitor_backoff(interval, 4), Duration::from_secs(8));
+        assert_eq!(monitor_backoff(interval, 5), Duration::from_secs(8));
+        assert_eq!(
+            monitor_backoff(Duration::from_secs(10), 3),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn monitor_error_events_are_rate_limited_to_state_changes() {
+        assert!(should_emit_monitor_error(1));
+        assert!(should_emit_monitor_error(2));
+        assert!(should_emit_monitor_error(3));
+        assert!(!should_emit_monitor_error(4));
+        assert!(should_emit_monitor_error(5));
+        assert!(!should_emit_monitor_error(6));
+    }
 }
