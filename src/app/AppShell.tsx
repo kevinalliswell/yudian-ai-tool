@@ -395,8 +395,12 @@ function ParametersPanel() {
       return;
     }
     try {
-      if (store.parameterSync !== "synced" || !store.deviceInfo.writeEnabled) {
+      if (store.parameterSync !== "synced") {
         store.setError("参数尚未同步，不能写入");
+        return;
+      }
+      if (!store.deviceInfo.writeEnabled) {
+        store.setError("设备为只读模式，DPT 读取失败，不能写入");
         return;
       }
       await api.writeSetpoint(setpointDraft);
@@ -414,8 +418,12 @@ function ParametersPanel() {
       return;
     }
     try {
-      if (store.parameterSync !== "synced" || !store.deviceInfo.writeEnabled) {
+      if (store.parameterSync !== "synced") {
         store.setError("参数尚未同步，不能写入");
+        return;
+      }
+      if (!store.deviceInfo.writeEnabled) {
+        store.setError("设备为只读模式，DPT 读取失败，不能写入");
         return;
       }
       await api.writePid(pidDraft);
