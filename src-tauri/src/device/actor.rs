@@ -197,6 +197,7 @@ struct DeviceActor {
     mode: BackendMode,
     backend: Option<Box<dyn DeviceBackend>>,
     info: DeviceInfo,
+    dpt_valid: bool,
     curve_verified: bool,
     rx: mpsc::Receiver<QueuedRequest>,
 }
@@ -207,6 +208,7 @@ impl DeviceActor {
             mode,
             backend: None,
             info: DeviceInfo::default(),
+            dpt_valid: false,
             curve_verified: false,
             rx,
         }
@@ -239,6 +241,7 @@ impl DeviceActor {
             }
         }
         self.info = DeviceInfo::default();
+        self.dpt_valid = false;
         self.curve_verified = false;
         warn!("device backend reset after request timeout");
     }
@@ -292,6 +295,15 @@ impl DeviceActor {
         self.backend.as_mut().ok_or(AppError::NotConnected)
     }
 
+    fn ensure_writable(&self) -> Result<(), AppError> {
+        if !self.dpt_valid {
+            return Err(AppError::InvalidData(
+                "device is read-only because DPT could not be read".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn connect(&mut self, cfg: ConnectionConfig) -> Result<DeviceInfo, AppError> {
         validate::validate_slave_addr(cfg.slave_addr)?;
         if self.backend.is_some() {
@@ -305,13 +317,13 @@ impl DeviceActor {
             .await?
             .first()
             .copied();
-        let dpt_raw = backend
-            .read_registers(registers::DPT, 1)
-            .await
-            .ok()
+        let dpt_values = backend.read_registers(registers::DPT, 1).await.ok();
+        let dpt_raw = dpt_values
+            .as_ref()
             .and_then(|values| values.first().copied())
             .and_then(convert::parameter_from_raw)
             .map(|value| value as u16);
+        let dpt_valid = dpt_raw.is_some();
         let scale = convert::parse_dpt(dpt_raw);
         let model_code =
             model_raw.and_then(|raw| convert::parameter_from_raw(raw).map(|v| v as u16));
@@ -319,11 +331,13 @@ impl DeviceActor {
 
         self.info = DeviceInfo {
             connected: true,
+            write_enabled: dpt_valid,
             model_code,
             model_name,
             decimal_point: scale.decimal_point,
             scale_factor: scale.scale_factor,
         };
+        self.dpt_valid = dpt_valid;
         self.curve_verified = false;
         self.backend = Some(backend);
         info!("device connected: {:?}", self.info.model_name);
@@ -337,6 +351,7 @@ impl DeviceActor {
             }
         }
         self.info = DeviceInfo::default();
+        self.dpt_valid = false;
         self.curve_verified = false;
         Ok(())
     }
@@ -396,12 +411,14 @@ impl DeviceActor {
     }
 
     async fn write_setpoint(&mut self, value: f64) -> Result<(), AppError> {
+        self.ensure_writable()?;
         validate::validate_temperature(value)?;
         let raw = convert::write_scaled(value, self.scale())?;
         self.backend()?.write_register(registers::SP1, raw).await
     }
 
     async fn write_pid(&mut self, values: PidValues) -> Result<(), AppError> {
+        self.ensure_writable()?;
         validate::validate_pid(values.p, values.i, values.d)?;
         let scale = self.scale();
         let previous: [u16; 3] = self
@@ -430,6 +447,7 @@ impl DeviceActor {
     }
 
     async fn set_run_status(&mut self, status: RunStatus) -> Result<(), AppError> {
+        self.ensure_writable()?;
         if status == RunStatus::Run {
             self.validate_run_prerequisites().await?;
         }
@@ -548,6 +566,7 @@ impl DeviceActor {
     }
 
     async fn download_curve(&mut self, segments: Vec<Segment>) -> Result<(), AppError> {
+        self.ensure_writable()?;
         self.curve_verified = false;
         validate::validate_segments(&segments)?;
         let scale = self.scale();
@@ -836,6 +855,7 @@ mod tests {
             mode: BackendMode::Mock,
             backend: Some(backend),
             info,
+            dpt_valid: true,
             curve_verified: false,
             rx,
         };
@@ -1084,6 +1104,7 @@ mod tests {
             Box::new(CurveDataBackend::with_reading(1000, 1000)),
             DeviceInfo {
                 connected: true,
+                write_enabled: true,
                 model_code: Some(9999),
                 model_name: Some(registers::model_name(9999)),
                 ..DeviceInfo::default()
@@ -1110,6 +1131,22 @@ mod tests {
         let handle = DeviceHandle::spawn(BackendMode::MockOffline);
         let err = handle.connect(mock_connection()).await.unwrap_err();
         assert!(matches!(err, AppError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn dpt_read_failure_keeps_device_read_only() {
+        let handle = DeviceHandle::spawn(BackendMode::MockDptFailure);
+        let info = handle.connect(mock_connection()).await.unwrap();
+
+        assert!(info.connected);
+        assert!(!info.write_enabled);
+        assert!(handle.read_reading().await.is_ok());
+
+        let result = handle.write_setpoint(120.0).await;
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("read-only")
+        ));
     }
 
     #[tokio::test]

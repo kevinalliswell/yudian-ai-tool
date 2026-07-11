@@ -11,6 +11,7 @@ export interface ConnectionConfig {
 
 export interface DeviceInfo {
   connected: boolean;
+  writeEnabled: boolean;
   modelCode?: number;
   modelName?: string;
   decimalPoint: number;

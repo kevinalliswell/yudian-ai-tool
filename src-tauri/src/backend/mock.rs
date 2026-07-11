@@ -11,6 +11,7 @@ pub struct MockBackend {
     registers: HashMap<u16, u16>,
     connected: bool,
     offline: bool,
+    dpt_failure: bool,
 }
 
 impl MockBackend {
@@ -37,6 +38,7 @@ impl MockBackend {
             registers,
             connected: false,
             offline: false,
+            dpt_failure: false,
         }
     }
 
@@ -46,11 +48,20 @@ impl MockBackend {
         backend
     }
 
-    fn ensure_ready(&self) -> Result<(), AppError> {
+    pub fn dpt_failure() -> Self {
+        let mut backend = Self::normal();
+        backend.dpt_failure = true;
+        backend
+    }
+
+    fn ensure_ready(&self, addr: u16) -> Result<(), AppError> {
         if !self.connected {
             return Err(AppError::NotConnected);
         }
         if self.offline {
+            return Err(AppError::Timeout);
+        }
+        if self.dpt_failure && addr == registers::DPT {
             return Err(AppError::Timeout);
         }
         Ok(())
@@ -70,7 +81,7 @@ impl DeviceBackend for MockBackend {
     }
 
     async fn read_registers(&mut self, addr: u16, count: u16) -> Result<Vec<u16>, AppError> {
-        self.ensure_ready()?;
+        self.ensure_ready(addr)?;
 
         Ok((0..count)
             .map(|offset| self.registers.get(&(addr + offset)).copied().unwrap_or(0))
@@ -78,7 +89,7 @@ impl DeviceBackend for MockBackend {
     }
 
     async fn write_register(&mut self, addr: u16, value: u16) -> Result<(), AppError> {
-        self.ensure_ready()?;
+        self.ensure_ready(addr)?;
         self.registers.insert(addr, value);
         Ok(())
     }

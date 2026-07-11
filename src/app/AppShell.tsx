@@ -82,7 +82,7 @@ export function AppShell() {
           actions.setDeviceInfo(
             event.connected
               ? { ...current, connected: true, modelName: event.model ?? current.modelName }
-              : { connected: false, decimalPoint: 1, scaleFactor: 1 },
+              : { connected: false, writeEnabled: false, decimalPoint: 1, scaleFactor: 1 },
           );
         }),
       );
@@ -311,6 +311,7 @@ function StatusBox() {
       <p className="text-sm text-muted-foreground">设备状态</p>
       <div className="mt-3 grid gap-2 text-sm">
         <Row label="连接" value={deviceInfo.connected ? "已连接" : "未连接"} />
+        <Row label="写入权限" value={deviceInfo.writeEnabled ? "可写" : "只读"} />
         <Row label="型号" value={deviceInfo.modelName || "--"} />
         <Row label="小数点" value={`${deviceInfo.decimalPoint}`} />
         <Row label="缩放" value={`${deviceInfo.scaleFactor}`} />
@@ -398,6 +399,10 @@ function ParametersPanel() {
         store.setError("参数尚未同步，不能写入");
         return;
       }
+      if (!store.deviceInfo.writeEnabled) {
+        store.setError("设备为只读模式，DPT 读取失败，不能写入");
+        return;
+      }
       await api.writeSetpoint(setpointDraft);
       store.setSetpoint(setpointDraft);
       store.setError(undefined);
@@ -415,6 +420,10 @@ function ParametersPanel() {
     try {
       if (store.parameterSync !== "synced") {
         store.setError("参数尚未同步，不能写入");
+        return;
+      }
+      if (!store.deviceInfo.writeEnabled) {
+        store.setError("设备为只读模式，DPT 读取失败，不能写入");
         return;
       }
       await api.writePid(pidDraft);
@@ -471,12 +480,20 @@ function ParametersPanel() {
             className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3"
             type="number"
             value={store.parameterSync === "synced" ? setpointDraft : ""}
-            disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
+            disabled={
+              !store.deviceInfo.connected ||
+              !store.deviceInfo.writeEnabled ||
+              store.parameterSync !== "synced"
+            }
             onChange={(event) => setSetpointDraft(Number(event.target.value))}
           />
           <Button
             onClick={writeSetpoint}
-            disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
+            disabled={
+              !store.deviceInfo.connected ||
+              !store.deviceInfo.writeEnabled ||
+              store.parameterSync !== "synced"
+            }
           >
             设置
           </Button>
@@ -502,7 +519,11 @@ function ParametersPanel() {
                 className="h-10 rounded-md border bg-background px-3"
                 type="number"
                 value={store.parameterSync === "synced" ? pidDraft[key] : ""}
-                disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
+                disabled={
+                  !store.deviceInfo.connected ||
+                  !store.deviceInfo.writeEnabled ||
+                  store.parameterSync !== "synced"
+                }
                 onChange={(event) =>
                   setPidDraft({ ...pidDraft, [key]: Number(event.target.value) })
                 }
@@ -513,7 +534,11 @@ function ParametersPanel() {
         <Button
           className="mt-3"
           onClick={writePid}
-          disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
+          disabled={
+            !store.deviceInfo.connected ||
+            !store.deviceInfo.writeEnabled ||
+            store.parameterSync !== "synced"
+          }
         >
           写入 PID
         </Button>
@@ -521,21 +546,24 @@ function ParametersPanel() {
       <div className="rounded-md border bg-background p-4 xl:col-span-2">
         <p className="mb-3 font-medium">运行状态</p>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => setRunStatus("run")} disabled={!store.deviceInfo.connected}>
+          <Button
+            onClick={() => setRunStatus("run")}
+            disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
+          >
             <Play className="mr-2 h-4 w-4" />
             运行
           </Button>
           <Button
             variant="secondary"
             onClick={() => setRunStatus("hold")}
-            disabled={!store.deviceInfo.connected}
+            disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
           >
             保持
           </Button>
           <Button
             variant="outline"
             onClick={() => setRunStatus("stop")}
-            disabled={!store.deviceInfo.connected}
+            disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
           >
             <Square className="mr-2 h-4 w-4" />
             停止
@@ -648,7 +676,10 @@ function CurvesPanel() {
               <Upload className="mr-2 h-4 w-4" />
               上传
             </Button>
-            <Button onClick={downloadCurve} disabled={!store.deviceInfo.connected}>
+            <Button
+              onClick={downloadCurve}
+              disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
+            >
               <Download className="mr-2 h-4 w-4" />
               下载
             </Button>

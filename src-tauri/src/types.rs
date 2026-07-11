@@ -19,6 +19,7 @@ pub struct ConnectionConfig {
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub connected: bool,
+    pub write_enabled: bool,
     pub model_code: Option<u16>,
     pub model_name: Option<String>,
     pub decimal_point: u8,
@@ -29,6 +30,7 @@ impl Default for DeviceInfo {
     fn default() -> Self {
         Self {
             connected: false,
+            write_enabled: false,
             model_code: None,
             model_name: None,
             decimal_point: 1,

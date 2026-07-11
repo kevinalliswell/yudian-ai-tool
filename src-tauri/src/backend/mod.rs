@@ -19,6 +19,7 @@ pub enum BackendMode {
     Real,
     Mock,
     MockOffline,
+    MockDptFailure,
 }
 
 impl BackendMode {
@@ -26,6 +27,7 @@ impl BackendMode {
         match std::env::var("YUDIAN_BACKEND") {
             Ok(value) if value.eq_ignore_ascii_case("mock") => Self::Mock,
             Ok(value) if value.eq_ignore_ascii_case("mock-offline") => Self::MockOffline,
+            Ok(value) if value.eq_ignore_ascii_case("mock-dpt-failure") => Self::MockDptFailure,
             _ => Self::Real,
         }
     }
@@ -36,5 +38,6 @@ pub fn create_backend(mode: BackendMode) -> Box<dyn DeviceBackend> {
         BackendMode::Real => Box::new(real::RealModbusBackend::default()),
         BackendMode::Mock => Box::new(mock::MockBackend::normal()),
         BackendMode::MockOffline => Box::new(mock::MockBackend::offline()),
+        BackendMode::MockDptFailure => Box::new(mock::MockBackend::dpt_failure()),
     }
 }

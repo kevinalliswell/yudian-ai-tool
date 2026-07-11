@@ -72,7 +72,7 @@ export const mockApi: DeviceApi = {
   async getDeviceInfo(): Promise<DeviceInfo> {
     return connected
       ? { ...snapshot.deviceInfo, connected: true }
-      : { connected: false, decimalPoint: 1, scaleFactor: 1 };
+      : { connected: false, writeEnabled: false, decimalPoint: 1, scaleFactor: 1 };
   },
 
   async getValidationLimits(): Promise<ValidationLimits> {
