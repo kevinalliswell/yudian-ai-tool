@@ -62,6 +62,11 @@ impl DeviceHandle {
         self.request(|reply| DeviceRequest::ReadPid { reply }).await
     }
 
+    pub async fn read_setpoint(&self) -> Result<f64, AppError> {
+        self.request(|reply| DeviceRequest::ReadSetpoint { reply })
+            .await
+    }
+
     pub async fn write_setpoint(&self, value: f64) -> Result<(), AppError> {
         self.request(|reply| DeviceRequest::WriteSetpoint { value, reply })
             .await
@@ -104,6 +109,9 @@ enum DeviceRequest {
     },
     ReadPid {
         reply: oneshot::Sender<Result<PidValues, AppError>>,
+    },
+    ReadSetpoint {
+        reply: oneshot::Sender<Result<f64, AppError>>,
     },
     WriteSetpoint {
         value: f64,
@@ -160,6 +168,9 @@ impl DeviceActor {
                 }
                 DeviceRequest::ReadPid { reply } => {
                     let _ = reply.send(self.read_pid().await);
+                }
+                DeviceRequest::ReadSetpoint { reply } => {
+                    let _ = reply.send(self.read_setpoint().await);
                 }
                 DeviceRequest::WriteSetpoint { value, reply } => {
                     let _ = reply.send(self.write_setpoint(value).await);
@@ -274,6 +285,22 @@ impl DeviceActor {
             .and_then(|raw| convert::d_seconds_from_raw(*raw))
             .ok_or_else(|| AppError::InvalidData("PID D has no valid data".to_string()))?;
         Ok(PidValues { p, i: i as u32, d })
+    }
+
+    async fn read_setpoint(&mut self) -> Result<f64, AppError> {
+        let scale = self.scale();
+        let raw = self
+            .backend()?
+            .read_registers(registers::SP1, 1)
+            .await?
+            .first()
+            .copied()
+            .ok_or_else(|| AppError::InvalidData("SP1 has no valid data".to_string()))?;
+        let value = convert::read_scaled(raw, scale)
+            .ok_or_else(|| AppError::InvalidData("SP1 has no valid data".to_string()))?;
+        validate::validate_temperature(value)
+            .map_err(|_| AppError::InvalidData("SP1 is out of range".to_string()))?;
+        Ok(value)
     }
 
     async fn write_setpoint(&mut self, value: f64) -> Result<(), AppError> {
@@ -640,6 +667,14 @@ mod tests {
         assert!(info.connected);
         assert_eq!(info.model_name.as_deref(), Some("AI-516P"));
         assert_eq!(info.decimal_point, 1);
+    }
+
+    #[tokio::test]
+    async fn mock_read_setpoint_returns_current_value() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        handle.connect(mock_connection()).await.unwrap();
+
+        assert_eq!(handle.read_setpoint().await.unwrap(), 100.0);
     }
 
     #[tokio::test]

@@ -28,6 +28,7 @@ const realApi: DeviceApi = {
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
   getValidationLimits: () => invoke<ValidationLimits>("get_validation_limits"),
   readPid: () => invoke<PidValues>("read_pid"),
+  readSetpoint: () => invoke<number>("read_setpoint"),
   writeSetpoint: (value: number) => invoke<void>("write_setpoint", { value }),
   writePid: (values: PidValues) => invoke<void>("write_pid", { values }),
   setRunStatus: (status: RunStatus) => invoke<void>("set_run_status", { status }),

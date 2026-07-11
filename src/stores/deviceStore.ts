@@ -7,6 +7,7 @@ import type {
   ErrorEvent,
   PidValues,
   PortInfo,
+  ParameterSyncState,
   Reading,
   Segment,
   ValidationLimits,
@@ -22,6 +23,7 @@ interface DeviceState {
   error?: string;
   pid: PidValues;
   setpoint: number;
+  parameterSync: ParameterSyncState;
   curve: Segment[];
   presets: CurvePreset[];
   setPorts: (ports: PortInfo[]) => void;
@@ -33,6 +35,7 @@ interface DeviceState {
   setBackendError: (event: ErrorEvent) => void;
   setPid: (pid: PidValues) => void;
   setSetpoint: (setpoint: number) => void;
+  setParameterSync: (state: ParameterSyncState) => void;
   setCurve: (curve: Segment[]) => void;
   setPresets: (presets: CurvePreset[]) => void;
   resetConnectionData: () => void;
@@ -57,6 +60,7 @@ export const useDeviceStore = create<DeviceState>((set) => ({
   error: undefined,
   pid: { p: 0, i: 0, d: 0 },
   setpoint: 100,
+  parameterSync: "unknown",
   curve: [{ temperature: 100, minutes: 20 }],
   presets: [],
   setPorts: (ports) =>
@@ -80,6 +84,7 @@ export const useDeviceStore = create<DeviceState>((set) => ({
   setBackendError: (event) => set({ error: `${event.scope}: ${event.message}` }),
   setPid: (pid) => set({ pid }),
   setSetpoint: (setpoint) => set({ setpoint }),
+  setParameterSync: (parameterSync) => set({ parameterSync }),
   setCurve: (curve) => set({ curve }),
   setPresets: (presets) => set({ presets }),
   resetConnectionData: () =>
@@ -88,5 +93,8 @@ export const useDeviceStore = create<DeviceState>((set) => ({
       latestReading: undefined,
       readings: [],
       error: undefined,
+      pid: { p: 0, i: 0, d: 0 },
+      setpoint: 100,
+      parameterSync: "unknown",
     }),
 }));

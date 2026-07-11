@@ -37,6 +37,8 @@ export interface CurvePreset {
 
 export type RunStatus = "run" | "hold" | "stop";
 
+export type ParameterSyncState = "unknown" | "syncing" | "synced" | "failed";
+
 export interface ValidationLimits {
   tempMin: number;
   tempMax: number;
@@ -81,6 +83,7 @@ export interface DeviceApi {
   getDeviceInfo: () => Promise<DeviceInfo>;
   getValidationLimits: () => Promise<ValidationLimits>;
   readPid: () => Promise<PidValues>;
+  readSetpoint: () => Promise<number>;
   writeSetpoint: (value: number) => Promise<void>;
   writePid: (values: PidValues) => Promise<void>;
   setRunStatus: (status: RunStatus) => Promise<void>;

@@ -172,6 +172,9 @@ function ConnectionPanel() {
       setError: state.setError,
       setConnectionConfig: state.setConnectionConfig,
       setDeviceInfo: state.setDeviceInfo,
+      setPid: state.setPid,
+      setSetpoint: state.setSetpoint,
+      setParameterSync: state.setParameterSync,
       resetConnectionData: state.resetConnectionData,
     })),
   );
@@ -202,7 +205,17 @@ function ConnectionPanel() {
     try {
       const info = await api.connect(store.connectionConfig);
       store.setDeviceInfo(info);
-      store.setError(undefined);
+      store.setParameterSync("syncing");
+      try {
+        const [setpoint, pid] = await Promise.all([api.readSetpoint(), api.readPid()]);
+        store.setSetpoint(setpoint);
+        store.setPid(pid);
+        store.setParameterSync("synced");
+        store.setError(undefined);
+      } catch (error) {
+        store.setParameterSync("failed");
+        store.setError(`参数同步失败：${readableError(error)}`);
+      }
       await api.startMonitoring(1000);
     } catch (error) {
       store.setError(readableError(error));
@@ -334,15 +347,33 @@ function ParametersPanel() {
     useShallow((state) => ({
       limits: state.limits,
       deviceInfo: state.deviceInfo,
+      parameterSync: state.parameterSync,
       pid: state.pid,
       setpoint: state.setpoint,
       setPid: state.setPid,
       setSetpoint: state.setSetpoint,
+      setParameterSync: state.setParameterSync,
       setError: state.setError,
     })),
   );
   const [pidDraft, setPidDraft] = useState<PidValues>(store.pid);
   const [setpointDraft, setSetpointDraft] = useState(store.setpoint);
+
+  async function readParameters() {
+    store.setParameterSync("syncing");
+    try {
+      const [setpoint, pid] = await Promise.all([api.readSetpoint(), api.readPid()]);
+      store.setSetpoint(setpoint);
+      store.setPid(pid);
+      setSetpointDraft(setpoint);
+      setPidDraft(pid);
+      store.setParameterSync("synced");
+      store.setError(undefined);
+    } catch (error) {
+      store.setParameterSync("failed");
+      store.setError(`参数同步失败：${readableError(error)}`);
+    }
+  }
 
   async function readPid() {
     try {
@@ -362,6 +393,10 @@ function ParametersPanel() {
       return;
     }
     try {
+      if (store.parameterSync !== "synced") {
+        store.setError("参数尚未同步，不能写入");
+        return;
+      }
       await api.writeSetpoint(setpointDraft);
       store.setSetpoint(setpointDraft);
       store.setError(undefined);
@@ -377,6 +412,10 @@ function ParametersPanel() {
       return;
     }
     try {
+      if (store.parameterSync !== "synced") {
+        store.setError("参数尚未同步，不能写入");
+        return;
+      }
       await api.writePid(pidDraft);
       store.setPid(pidDraft);
       store.setError(undefined);
@@ -396,17 +435,41 @@ function ParametersPanel() {
 
   return (
     <div className="grid gap-5 xl:grid-cols-2">
+      <div className="flex items-center justify-between gap-3 xl:col-span-2">
+        <div>
+          <p className="font-medium">设备参数同步</p>
+          <p className="text-sm text-muted-foreground">
+            {store.parameterSync === "synced"
+              ? "已读取当前设备值"
+              : store.parameterSync === "syncing"
+                ? "正在读取设备值"
+                : store.parameterSync === "failed"
+                  ? "读取失败，请重试"
+                  : "尚未读取设备值"}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          onClick={readParameters}
+          disabled={!store.deviceInfo.connected || store.parameterSync === "syncing"}
+        >
+          读取当前值
+        </Button>
+      </div>
       <div className="rounded-md border bg-background p-4">
         <p className="mb-3 font-medium">给定值 SP1</p>
         <div className="flex gap-2">
           <input
             className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3"
             type="number"
-            value={setpointDraft}
-            disabled={!store.deviceInfo.connected}
+            value={store.parameterSync === "synced" ? setpointDraft : ""}
+            disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
             onChange={(event) => setSetpointDraft(Number(event.target.value))}
           />
-          <Button onClick={writeSetpoint} disabled={!store.deviceInfo.connected}>
+          <Button
+            onClick={writeSetpoint}
+            disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
+          >
             设置
           </Button>
         </div>
@@ -430,8 +493,8 @@ function ParametersPanel() {
               <input
                 className="h-10 rounded-md border bg-background px-3"
                 type="number"
-                value={pidDraft[key]}
-                disabled={!store.deviceInfo.connected}
+                value={store.parameterSync === "synced" ? pidDraft[key] : ""}
+                disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
                 onChange={(event) =>
                   setPidDraft({ ...pidDraft, [key]: Number(event.target.value) })
                 }
@@ -439,7 +502,11 @@ function ParametersPanel() {
             </label>
           ))}
         </div>
-        <Button className="mt-3" onClick={writePid} disabled={!store.deviceInfo.connected}>
+        <Button
+          className="mt-3"
+          onClick={writePid}
+          disabled={!store.deviceInfo.connected || store.parameterSync !== "synced"}
+        >
           写入 PID
         </Button>
       </div>

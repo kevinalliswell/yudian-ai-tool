@@ -57,6 +57,11 @@ pub async fn read_pid(state: State<'_, AppState>) -> Result<PidValues, AppError>
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn read_setpoint(state: State<'_, AppState>) -> Result<f64, AppError> {
+    state.device.read_setpoint().await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn write_setpoint(state: State<'_, AppState>, value: f64) -> Result<(), AppError> {
     state.device.write_setpoint(value).await
 }

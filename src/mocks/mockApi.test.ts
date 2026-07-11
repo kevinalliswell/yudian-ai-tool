@@ -20,6 +20,7 @@ describe("mockApi", () => {
 
     const info = await mockApi.connect({ port: "COM_MOCK", slaveAddr: 1, baudrate: 9600 });
     expect(info.modelName).toBe("AI-516P");
+    expect(await mockApi.readSetpoint()).toBe(100);
 
     await mockApi.startMonitoring(200);
     vi.advanceTimersByTime(250);

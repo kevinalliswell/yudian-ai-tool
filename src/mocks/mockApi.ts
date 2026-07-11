@@ -81,6 +81,11 @@ export const mockApi: DeviceApi = {
     return { ...pid };
   },
 
+  async readSetpoint(): Promise<number> {
+    ensureConnected();
+    return setpoint;
+  },
+
   async writeSetpoint(value: number): Promise<void> {
     ensureConnected();
     setpoint = value;
