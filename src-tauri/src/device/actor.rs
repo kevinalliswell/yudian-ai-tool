@@ -285,13 +285,29 @@ impl DeviceActor {
     async fn write_pid(&mut self, values: PidValues) -> Result<(), AppError> {
         validate::validate_pid(values.p, values.i, values.d)?;
         let scale = self.scale();
-        let p = convert::write_scaled(values.p, scale)?;
-        let i = convert::to_uint16(values.i as i32, "PID I")?;
-        let d = convert::d_seconds_to_raw(values.d)?;
+        let previous: [u16; 3] = self
+            .backend()?
+            .read_registers(registers::P, 3)
+            .await?
+            .try_into()
+            .map_err(|_| AppError::InvalidData("PID backup has insufficient data".to_string()))?;
+        let encoded = encode_pid(&values, scale)?;
         let backend = self.backend()?;
-        backend.write_register(registers::P, p).await?;
-        backend.write_register(registers::I, i).await?;
-        backend.write_register(registers::D, d).await
+
+        match write_pid_transaction(backend.as_mut(), encoded).await {
+            Ok(()) => Ok(()),
+            Err(write_error) => {
+                warn!("PID write failed, restoring previous values: {write_error}");
+                match write_pid_transaction(backend.as_mut(), previous).await {
+                    Ok(()) => Err(AppError::Backend(format!(
+                        "PID write failed: {write_error}; rollback succeeded"
+                    ))),
+                    Err(rollback_error) => Err(AppError::Backend(format!(
+                        "PID write failed: {write_error}; rollback failed: {rollback_error}"
+                    ))),
+                }
+            }
+        }
     }
 
     async fn set_run_status(&mut self, status: RunStatus) -> Result<(), AppError> {
@@ -377,6 +393,31 @@ impl DeviceActor {
     }
 }
 
+fn encode_pid(values: &PidValues, scale: convert::ScaleConfig) -> Result<[u16; 3], AppError> {
+    Ok([
+        convert::write_scaled(values.p, scale)?,
+        convert::to_uint16(values.i as i32, "PID I")?,
+        convert::d_seconds_to_raw(values.d)?,
+    ])
+}
+
+async fn write_pid_transaction(
+    backend: &mut dyn DeviceBackend,
+    encoded: [u16; 3],
+) -> Result<(), AppError> {
+    backend.write_register(registers::P, encoded[0]).await?;
+    backend.write_register(registers::I, encoded[1]).await?;
+    backend.write_register(registers::D, encoded[2]).await?;
+
+    let values = backend.read_registers(registers::P, 3).await?;
+    if values.as_slice() != encoded.as_slice() {
+        return Err(AppError::InvalidData(
+            "PID read-back verification failed".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn encode_segments(
     segments: &[Segment],
     scale: convert::ScaleConfig,
@@ -403,8 +444,7 @@ async fn write_curve_transaction(
         sleep(Duration::from_millis(50)).await;
 
         let values = backend.read_registers(base, 2).await?;
-        if values.first().copied() != Some(*temperature)
-            || values.get(1).copied() != Some(*minutes)
+        if values.first().copied() != Some(*temperature) || values.get(1).copied() != Some(*minutes)
         {
             return Err(AppError::InvalidData(format!(
                 "curve segment {index} read-back mismatch"
@@ -428,8 +468,7 @@ async fn write_curve_transaction(
     for (index, (temperature, minutes)) in encoded_segments.iter().enumerate() {
         let base = registers::SP_START + index as u16 * 2;
         let values = backend.read_registers(base, 2).await?;
-        if values.first().copied() != Some(*temperature)
-            || values.get(1).copied() != Some(*minutes)
+        if values.first().copied() != Some(*temperature) || values.get(1).copied() != Some(*minutes)
         {
             return Err(AppError::InvalidData(format!(
                 "curve segment {index} final verification mismatch"
@@ -449,7 +488,72 @@ fn unix_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use async_trait::async_trait;
+
     use super::*;
+
+    struct FailOnceBackend {
+        registers: HashMap<u16, u16>,
+        fail_on_write: usize,
+        writes: usize,
+    }
+
+    impl FailOnceBackend {
+        fn new(fail_on_write: usize) -> Self {
+            Self {
+                registers: HashMap::from([
+                    (registers::P, 120),
+                    (registers::I, 300),
+                    (registers::D, 45),
+                ]),
+                fail_on_write,
+                writes: 0,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DeviceBackend for FailOnceBackend {
+        async fn connect(&mut self, _cfg: &ConnectionConfig) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn disconnect(&mut self) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn read_registers(&mut self, addr: u16, count: u16) -> Result<Vec<u16>, AppError> {
+            Ok((0..count)
+                .map(|offset| self.registers.get(&(addr + offset)).copied().unwrap_or(0))
+                .collect())
+        }
+
+        async fn write_register(&mut self, addr: u16, value: u16) -> Result<(), AppError> {
+            self.writes += 1;
+            if self.writes == self.fail_on_write {
+                return Err(AppError::Backend("injected PID write failure".to_string()));
+            }
+            self.registers.insert(addr, value);
+            Ok(())
+        }
+    }
+
+    fn spawn_test_backend(backend: Box<dyn DeviceBackend>) -> DeviceHandle {
+        let (tx, rx) = mpsc::channel(64);
+        let actor = DeviceActor {
+            mode: BackendMode::Mock,
+            backend: Some(backend),
+            info: DeviceInfo {
+                connected: true,
+                ..DeviceInfo::default()
+            },
+            rx,
+        };
+        tauri::async_runtime::spawn(actor.run());
+        DeviceHandle { tx }
+    }
 
     fn mock_connection() -> ConnectionConfig {
         ConnectionConfig {
@@ -466,6 +570,51 @@ mod tests {
         assert!(info.connected);
         assert_eq!(info.model_name.as_deref(), Some("AI-516P"));
         assert_eq!(info.decimal_point, 1);
+    }
+
+    #[tokio::test]
+    async fn pid_write_round_trip_uses_mock_backend() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        handle.connect(mock_connection()).await.unwrap();
+        handle
+            .write_pid(PidValues {
+                p: 12.5,
+                i: 240,
+                d: 3.0,
+            })
+            .await
+            .unwrap();
+
+        let actual = handle.read_pid().await.unwrap();
+        assert_eq!(actual.p, 12.5);
+        assert_eq!(actual.i, 240);
+        assert_eq!(actual.d, 3.0);
+    }
+
+    #[tokio::test]
+    async fn pid_write_rolls_back_when_middle_register_write_fails() {
+        let handle = spawn_test_backend(Box::new(FailOnceBackend::new(2)));
+
+        let result = handle
+            .write_pid(PidValues {
+                p: 12.5,
+                i: 240,
+                d: 3.0,
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::Backend(message)) if message.contains("rollback succeeded")
+        ));
+        assert_eq!(
+            handle.read_pid().await.unwrap(),
+            PidValues {
+                p: 12.0,
+                i: 300,
+                d: 4.5,
+            }
+        );
     }
 
     #[tokio::test]
