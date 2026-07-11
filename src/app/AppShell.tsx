@@ -429,7 +429,7 @@ function ParametersPanel() {
     if (status === "run") {
       const totalMinutes = store.curve.reduce((sum, segment) => sum + segment.minutes, 0);
       const confirmed = window.confirm(
-        `确认运行当前曲线？\n${store.curve.length} 段，${totalMinutes} 分钟（${(totalMinutes / 60).toFixed(1)} 小时）`,
+        `${zhCN.runConfirmation.title}\n${zhCN.runConfirmation.summary(store.curve.length, totalMinutes)}`,
       );
       if (!confirmed) return;
     }

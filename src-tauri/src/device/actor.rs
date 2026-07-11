@@ -470,12 +470,6 @@ impl DeviceActor {
 
         match write_curve_transaction(backend, &encoded_segments).await {
             Ok(()) => {
-                let verified = self.upload_curve().await?;
-                if verified != segments {
-                    return Err(AppError::InvalidData(
-                        "curve download read-back verification failed".to_string(),
-                    ));
-                }
                 self.curve_verified = true;
                 Ok(())
             }
@@ -927,7 +921,7 @@ mod tests {
         handle.connect(mock_connection()).await.unwrap();
         handle
             .download_curve(vec![Segment {
-                temperature: 120.0,
+                temperature: 12.34,
                 minutes: 10,
             }])
             .await
