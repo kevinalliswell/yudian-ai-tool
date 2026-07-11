@@ -20,6 +20,7 @@ pub enum BackendMode {
     Mock,
     MockOffline,
     MockDptFailure,
+    MockUnknownModel,
 }
 
 impl BackendMode {
@@ -28,6 +29,7 @@ impl BackendMode {
             Ok(value) if value.eq_ignore_ascii_case("mock") => Self::Mock,
             Ok(value) if value.eq_ignore_ascii_case("mock-offline") => Self::MockOffline,
             Ok(value) if value.eq_ignore_ascii_case("mock-dpt-failure") => Self::MockDptFailure,
+            Ok(value) if value.eq_ignore_ascii_case("mock-unknown-model") => Self::MockUnknownModel,
             _ => Self::Real,
         }
     }
@@ -39,5 +41,6 @@ pub fn create_backend(mode: BackendMode) -> Box<dyn DeviceBackend> {
         BackendMode::Mock => Box::new(mock::MockBackend::normal()),
         BackendMode::MockOffline => Box::new(mock::MockBackend::offline()),
         BackendMode::MockDptFailure => Box::new(mock::MockBackend::dpt_failure()),
+        BackendMode::MockUnknownModel => Box::new(mock::MockBackend::unknown_model()),
     }
 }

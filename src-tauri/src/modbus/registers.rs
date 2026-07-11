@@ -27,6 +27,13 @@ pub fn model_name(code: u16) -> String {
     }
 }
 
+pub fn is_supported_model(code: u16) -> bool {
+    matches!(
+        code,
+        MODEL_AI_516 | MODEL_AI_516P | MODEL_AI_518 | MODEL_AI_518P
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +45,7 @@ mod tests {
         assert_eq!(model_name(5180), "AI-518");
         assert_eq!(model_name(5187), "AI-518P");
         assert_eq!(model_name(9999), "未知型号(0x270F)");
+        assert!(is_supported_model(MODEL_AI_516P));
+        assert!(!is_supported_model(9999));
     }
 }
