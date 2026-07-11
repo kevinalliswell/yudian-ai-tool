@@ -99,3 +99,7 @@
 ## v0.4.9
 
 - Automated release from Conventional Commits.
+
+## v0.5.0
+
+- Automated release from Conventional Commits.
