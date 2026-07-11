@@ -54,6 +54,12 @@ impl MockBackend {
         backend
     }
 
+    pub fn unknown_model() -> Self {
+        let mut backend = Self::normal();
+        backend.registers.insert(registers::MODEL, 9999);
+        backend
+    }
+
     fn ensure_ready(&self, addr: u16) -> Result<(), AppError> {
         if !self.connected {
             return Err(AppError::NotConnected);

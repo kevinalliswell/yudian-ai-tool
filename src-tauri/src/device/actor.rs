@@ -296,10 +296,15 @@ impl DeviceActor {
     }
 
     fn ensure_writable(&self) -> Result<(), AppError> {
-        if !self.dpt_valid {
-            return Err(AppError::InvalidData(
-                "device is read-only because DPT could not be read".to_string(),
-            ));
+        if !self.info.write_enabled {
+            let reason = if !self.dpt_valid {
+                "DPT could not be read"
+            } else {
+                "its model is not supported"
+            };
+            return Err(AppError::InvalidData(format!(
+                "device is read-only because {reason}"
+            )));
         }
         Ok(())
     }
@@ -328,10 +333,14 @@ impl DeviceActor {
         let model_code =
             model_raw.and_then(|raw| convert::parameter_from_raw(raw).map(|v| v as u16));
         let model_name = model_code.map(registers::model_name);
+        let write_enabled = dpt_valid
+            && model_code
+                .map(registers::is_supported_model)
+                .unwrap_or(false);
 
         self.info = DeviceInfo {
             connected: true,
-            write_enabled: dpt_valid,
+            write_enabled,
             model_code,
             model_name,
             decimal_point: scale.decimal_point,
@@ -463,13 +472,7 @@ impl DeviceActor {
         let model_code = self.info.model_code.ok_or_else(|| {
             AppError::InvalidData("run requires a supported device model".to_string())
         })?;
-        if !matches!(
-            model_code,
-            registers::MODEL_AI_516
-                | registers::MODEL_AI_516P
-                | registers::MODEL_AI_518
-                | registers::MODEL_AI_518P
-        ) {
+        if !registers::is_supported_model(model_code) {
             return Err(AppError::InvalidData(format!(
                 "run is not supported for device model {model_code}"
             )));
@@ -839,6 +842,7 @@ mod tests {
             backend,
             DeviceInfo {
                 connected: true,
+                write_enabled: true,
                 model_code: Some(registers::MODEL_AI_516P),
                 model_name: Some("AI-516P".to_string()),
                 ..DeviceInfo::default()
@@ -1110,14 +1114,6 @@ mod tests {
                 ..DeviceInfo::default()
             },
         );
-        handle
-            .download_curve(vec![Segment {
-                temperature: 120.0,
-                minutes: 10,
-            }])
-            .await
-            .unwrap();
-
         let result = handle.set_run_status(RunStatus::Run).await;
 
         assert!(matches!(
@@ -1146,6 +1142,23 @@ mod tests {
         assert!(matches!(
             result,
             Err(AppError::InvalidData(message)) if message.contains("read-only")
+        ));
+    }
+
+    #[tokio::test]
+    async fn unknown_model_keeps_device_read_only() {
+        let handle = DeviceHandle::spawn(BackendMode::MockUnknownModel);
+        let info = handle.connect(mock_connection()).await.unwrap();
+
+        assert!(info.connected);
+        assert_eq!(info.model_name.as_deref(), Some("未知型号(0x270F)"));
+        assert!(!info.write_enabled);
+        assert!(handle.read_reading().await.is_ok());
+
+        let result = handle.write_setpoint(120.0).await;
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("model")
         ));
     }
 
