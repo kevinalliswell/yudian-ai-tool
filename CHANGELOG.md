@@ -75,3 +75,7 @@
 ## v0.4.3
 
 - Automated release from Conventional Commits.
+
+## v0.4.4
+
+- Automated release from Conventional Commits.
