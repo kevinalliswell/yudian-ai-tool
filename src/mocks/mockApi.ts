@@ -18,6 +18,7 @@ let connected = false;
 let pid: PidValues = { ...snapshot.pid };
 let setpoint = 100;
 let curve: Segment[] = snapshot.segments.map((segment) => ({ ...segment }));
+let curveVerified = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 let streamIndex = 0;
 
@@ -55,6 +56,7 @@ export const mockApi: DeviceApi = {
   async connect(cfg: ConnectionConfig): Promise<DeviceInfo> {
     void cfg;
     connected = true;
+    curveVerified = false;
     const info = { ...snapshot.deviceInfo, connected };
     emitStatus({ connected: true, model: info.modelName });
     return info;
@@ -62,6 +64,7 @@ export const mockApi: DeviceApi = {
 
   async disconnect(): Promise<void> {
     connected = false;
+    curveVerified = false;
     await mockApi.stopMonitoring();
     emitStatus({ connected: false, model: null });
   },
@@ -97,8 +100,27 @@ export const mockApi: DeviceApi = {
   },
 
   async setRunStatus(status: RunStatus): Promise<void> {
-    void status;
     ensureConnected();
+    if (status !== "run") return;
+    if (!snapshot.deviceInfo.modelName) {
+      throw { kind: "invalidData", message: "运行需要受支持的设备型号" };
+    }
+    if (!curveVerified) {
+      throw { kind: "invalidData", message: "运行需要已验证的曲线下载" };
+    }
+    const reading = snapshot.readingStream[0];
+    const { tempMin, tempMax } = snapshot.validationLimits;
+    for (const [label, value] of [
+      ["PV", reading.pv],
+      ["SV", setpoint],
+    ] as const) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw { kind: "invalidData", message: `运行需要有效的 ${label} 数据` };
+      }
+      if (value < tempMin || value > tempMax) {
+        throw { kind: "invalidData", message: `运行需要 ${label} 在温度范围内` };
+      }
+    }
   },
 
   async uploadCurve(): Promise<Segment[]> {
@@ -109,6 +131,7 @@ export const mockApi: DeviceApi = {
   async downloadCurve(segments: Segment[]): Promise<void> {
     ensureConnected();
     curve = segments.map((segment) => ({ ...segment }));
+    curveVerified = true;
   },
 
   async startMonitoring(intervalMs: number): Promise<void> {

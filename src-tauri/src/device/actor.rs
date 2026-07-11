@@ -138,6 +138,7 @@ struct DeviceActor {
     mode: BackendMode,
     backend: Option<Box<dyn DeviceBackend>>,
     info: DeviceInfo,
+    curve_verified: bool,
     rx: mpsc::Receiver<DeviceRequest>,
 }
 
@@ -147,6 +148,7 @@ impl DeviceActor {
             mode,
             backend: None,
             info: DeviceInfo::default(),
+            curve_verified: false,
             rx,
         }
     }
@@ -234,6 +236,7 @@ impl DeviceActor {
             decimal_point: scale.decimal_point,
             scale_factor: scale.scale_factor,
         };
+        self.curve_verified = false;
         self.backend = Some(backend);
         info!("device connected: {:?}", self.info.model_name);
         Ok(self.info.clone())
@@ -246,6 +249,7 @@ impl DeviceActor {
             }
         }
         self.info = DeviceInfo::default();
+        self.curve_verified = false;
         Ok(())
     }
 
@@ -338,9 +342,43 @@ impl DeviceActor {
     }
 
     async fn set_run_status(&mut self, status: RunStatus) -> Result<(), AppError> {
+        if status == RunStatus::Run {
+            self.validate_run_prerequisites().await?;
+        }
         self.backend()?
             .write_register(registers::SRUN, status.register_value())
             .await
+    }
+
+    async fn validate_run_prerequisites(&mut self) -> Result<(), AppError> {
+        if self.backend.is_none() {
+            return Err(AppError::NotConnected);
+        }
+        let model_code = self.info.model_code.ok_or_else(|| {
+            AppError::InvalidData("run requires a supported device model".to_string())
+        })?;
+        if !matches!(
+            model_code,
+            registers::MODEL_AI_516
+                | registers::MODEL_AI_516P
+                | registers::MODEL_AI_518
+                | registers::MODEL_AI_518P
+        ) {
+            return Err(AppError::InvalidData(format!(
+                "run is not supported for device model {model_code}"
+            )));
+        }
+
+        if !self.curve_verified {
+            return Err(AppError::InvalidData(
+                "run requires a verified curve download".to_string(),
+            ));
+        }
+
+        let reading = self.read_reading().await?;
+        validate_run_value("PV", reading.pv)?;
+        validate_run_value("SV", reading.sv)?;
+        Ok(())
     }
 
     async fn upload_curve(&mut self) -> Result<Vec<Segment>, AppError> {
@@ -422,6 +460,7 @@ impl DeviceActor {
     }
 
     async fn download_curve(&mut self, segments: Vec<Segment>) -> Result<(), AppError> {
+        self.curve_verified = false;
         validate::validate_segments(&segments)?;
         let scale = self.scale();
         let previous_segments = self.upload_curve().await?;
@@ -430,7 +469,10 @@ impl DeviceActor {
         let backend = self.backend()?;
 
         match write_curve_transaction(backend, &encoded_segments).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.curve_verified = true;
+                Ok(())
+            }
             Err(write_error) => {
                 warn!("curve download failed, restoring previous curve: {write_error}");
                 match write_curve_transaction(backend, &encoded_previous).await {
@@ -444,6 +486,19 @@ impl DeviceActor {
             }
         }
     }
+}
+
+fn validate_run_value(label: &str, value: Option<f64>) -> Result<(), AppError> {
+    let value =
+        value.ok_or_else(|| AppError::InvalidData(format!("run requires valid {label} data")))?;
+    if !value.is_finite() {
+        return Err(AppError::InvalidData(format!(
+            "run requires finite {label} data"
+        )));
+    }
+    validate::validate_temperature(value).map_err(|_| {
+        AppError::InvalidData(format!("run requires {label} within the temperature range"))
+    })
 }
 
 fn encode_pid(values: &PidValues, scale: convert::ScaleConfig) -> Result<[u16; 3], AppError> {
@@ -578,6 +633,18 @@ mod tests {
             }
         }
 
+        fn with_reading(pv: u16, sv: u16) -> Self {
+            Self {
+                registers: HashMap::from([
+                    (registers::PNO, 1),
+                    (registers::SP_START, 1000),
+                    (registers::SP_START + 1, 20),
+                    (registers::PV, pv),
+                    (registers::SV, sv),
+                ]),
+            }
+        }
+
         fn with_negative_minutes() -> Self {
             Self {
                 registers: HashMap::from([
@@ -638,14 +705,27 @@ mod tests {
     }
 
     fn spawn_test_backend(backend: Box<dyn DeviceBackend>) -> DeviceHandle {
+        spawn_test_backend_with_info(
+            backend,
+            DeviceInfo {
+                connected: true,
+                model_code: Some(registers::MODEL_AI_516P),
+                model_name: Some("AI-516P".to_string()),
+                ..DeviceInfo::default()
+            },
+        )
+    }
+
+    fn spawn_test_backend_with_info(
+        backend: Box<dyn DeviceBackend>,
+        info: DeviceInfo,
+    ) -> DeviceHandle {
         let (tx, rx) = mpsc::channel(64);
         let actor = DeviceActor {
             mode: BackendMode::Mock,
             backend: Some(backend),
-            info: DeviceInfo {
-                connected: true,
-                ..DeviceInfo::default()
-            },
+            info,
+            curve_verified: false,
             rx,
         };
         tauri::async_runtime::spawn(actor.run());
@@ -820,6 +900,98 @@ mod tests {
         assert_eq!(reading.pv, Some(100.5));
         assert_eq!(reading.sv, Some(100.0));
         assert_eq!(reading.mv, Some(50.0));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_unverified_curve() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        handle.connect(mock_connection()).await.unwrap();
+
+        let result = handle.set_run_status(RunStatus::Run).await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("curve")
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_is_allowed_after_curve_download_verification() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        handle.connect(mock_connection()).await.unwrap();
+        handle
+            .download_curve(vec![Segment {
+                temperature: 12.34,
+                minutes: 10,
+            }])
+            .await
+            .unwrap();
+
+        handle.set_run_status(RunStatus::Run).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_rejects_invalid_pv_and_sv() {
+        let invalid_pv = spawn_test_backend(Box::new(CurveDataBackend::with_reading(
+            convert::SENTINEL_NO_DATA,
+            1000,
+        )));
+        invalid_pv
+            .download_curve(vec![Segment {
+                temperature: 120.0,
+                minutes: 10,
+            }])
+            .await
+            .unwrap();
+        let pv_result = invalid_pv.set_run_status(RunStatus::Run).await;
+        assert!(matches!(
+            pv_result,
+            Err(AppError::InvalidData(message)) if message.contains("PV")
+        ));
+
+        let invalid_sv = spawn_test_backend(Box::new(CurveDataBackend::with_reading(
+            1000,
+            convert::SENTINEL_NO_DATA,
+        )));
+        invalid_sv
+            .download_curve(vec![Segment {
+                temperature: 120.0,
+                minutes: 10,
+            }])
+            .await
+            .unwrap();
+        let sv_result = invalid_sv.set_run_status(RunStatus::Run).await;
+        assert!(matches!(
+            sv_result,
+            Err(AppError::InvalidData(message)) if message.contains("SV")
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_unknown_model() {
+        let handle = spawn_test_backend_with_info(
+            Box::new(CurveDataBackend::with_reading(1000, 1000)),
+            DeviceInfo {
+                connected: true,
+                model_code: Some(9999),
+                model_name: Some(registers::model_name(9999)),
+                ..DeviceInfo::default()
+            },
+        );
+        handle
+            .download_curve(vec![Segment {
+                temperature: 120.0,
+                minutes: 10,
+            }])
+            .await
+            .unwrap();
+
+        let result = handle.set_run_status(RunStatus::Run).await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("model")
+        ));
     }
 
     #[tokio::test]

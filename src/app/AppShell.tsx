@@ -350,6 +350,7 @@ function ParametersPanel() {
       parameterSync: state.parameterSync,
       pid: state.pid,
       setpoint: state.setpoint,
+      curve: state.curve,
       setPid: state.setPid,
       setSetpoint: state.setSetpoint,
       setParameterSync: state.setParameterSync,
@@ -425,6 +426,13 @@ function ParametersPanel() {
   }
 
   async function setRunStatus(status: RunStatus) {
+    if (status === "run") {
+      const totalMinutes = store.curve.reduce((sum, segment) => sum + segment.minutes, 0);
+      const confirmed = window.confirm(
+        `${zhCN.runConfirmation.title}\n${zhCN.runConfirmation.summary(store.curve.length, totalMinutes)}`,
+      );
+      if (!confirmed) return;
+    }
     try {
       await api.setRunStatus(status);
       store.setError(undefined);
