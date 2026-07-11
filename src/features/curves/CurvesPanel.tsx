@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { recordAuditEvent, rollbackStatusFromError } from "@/lib/auditLog";
 import type { CurvePreset, Segment } from "@/lib/types";
 import { createCurveSchema } from "@/lib/validation";
 import { useDeviceStore } from "@/stores/deviceStore";
@@ -15,6 +16,7 @@ export function CurvesPanel() {
     useShallow((state) => ({
       limits: state.limits,
       deviceInfo: state.deviceInfo,
+      connectionConfig: state.connectionConfig,
       curve: state.curve,
       presets: state.presets,
       setCurve: state.setCurve,
@@ -44,25 +46,92 @@ export function CurvesPanel() {
   }
 
   async function uploadCurve() {
+    const before = store.curve.map((segment) => ({ ...segment }));
     try {
-      store.setCurve(await api.uploadCurve());
+      const after = await api.uploadCurve();
+      store.setCurve(after);
       store.setError(undefined);
+      await recordAuditEvent({
+        action: "curve_upload",
+        outcome: "success",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          after,
+        },
+      });
     } catch (error) {
-      store.setError(readableError(error));
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "curve_upload",
+        outcome: "failure",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          error: message,
+        },
+      });
     }
   }
 
   async function downloadCurve() {
     if (!store.limits) return;
+    const after = store.curve.map((segment) => ({ ...segment }));
     if (!createCurveSchema(store.limits).safeParse(store.curve).success) {
       store.setError("曲线段超出范围");
+      await recordAuditEvent({
+        action: "curve_download",
+        outcome: "rejected",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          attempted: after,
+          reason: "curve_out_of_range",
+        },
+      });
       return;
     }
+    let before: Segment[] | undefined;
+    let beforeReadError: string | undefined;
     try {
-      await api.downloadCurve(store.curve);
-      store.setError(undefined);
+      before = await api.uploadCurve();
     } catch (error) {
-      store.setError(readableError(error));
+      beforeReadError = readableError(error);
+    }
+    try {
+      await api.downloadCurve(after);
+      store.setError(undefined);
+      await recordAuditEvent({
+        action: "curve_download",
+        outcome: "success",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          after,
+          rollback: "not_applicable",
+          ...(beforeReadError ? { reason: `before_read_failed: ${beforeReadError}` } : {}),
+        },
+      });
+    } catch (error) {
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "curve_download",
+        outcome: "failure",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          attempted: after,
+          error: message,
+          rollback: rollbackStatusFromError(error),
+          ...(beforeReadError ? { reason: `before_read_failed: ${beforeReadError}` } : {}),
+        },
+      });
     }
   }
 
@@ -74,6 +143,16 @@ export function CurvesPanel() {
       segments: store.curve.map((segment) => ({ ...segment })),
     };
     store.setPresets([preset, ...store.presets]);
+    void recordAuditEvent({
+      action: "preset_save",
+      outcome: "success",
+      details: {
+        connection: store.connectionConfig,
+        device: store.deviceInfo,
+        before: store.curve,
+        after: preset,
+      },
+    });
   }
 
   return (

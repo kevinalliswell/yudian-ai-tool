@@ -118,7 +118,12 @@ export function recordAuditEvent(
 }
 
 export function rollbackStatusFromError(error: unknown): RollbackStatus {
-  const message = error instanceof Error ? error.message : String(error);
+  const message =
+    error instanceof Error
+      ? error.message
+      : error && typeof error === "object" && "message" in error
+        ? String(error.message)
+        : String(error);
   if (message.includes("rollback succeeded")) return "succeeded";
   if (message.includes("rollback failed")) return "failed";
   return "unknown";

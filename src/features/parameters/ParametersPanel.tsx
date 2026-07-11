@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { zhCN } from "@/i18n/zh-CN";
 import { api } from "@/lib/api";
+import { recordAuditEvent, rollbackStatusFromError } from "@/lib/auditLog";
 import type { PidValues, RunStatus } from "@/lib/types";
 import { createPidSchema, createTemperatureSchema } from "@/lib/validation";
 import { useDeviceStore } from "@/stores/deviceStore";
@@ -17,6 +18,7 @@ export function ParametersPanel() {
       limits: state.limits,
       deviceInfo: state.deviceInfo,
       parameterSync: state.parameterSync,
+      connectionConfig: state.connectionConfig,
       pid: state.pid,
       setpoint: state.setpoint,
       curve: state.curve,
@@ -58,63 +60,198 @@ export function ParametersPanel() {
 
   async function writeSetpoint() {
     if (!store.limits) return;
+    const before = store.setpoint;
     if (!createTemperatureSchema(store.limits).safeParse(setpointDraft).success) {
       store.setError("给定值超出范围");
+      await recordAuditEvent({
+        action: "write_setpoint",
+        outcome: "rejected",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          attempted: setpointDraft,
+          reason: "value_out_of_range",
+        },
+      });
       return;
     }
     try {
       if (store.parameterSync !== "synced") {
         store.setError("参数尚未同步，不能写入");
+        await recordAuditEvent({
+          action: "write_setpoint",
+          outcome: "rejected",
+          details: {
+            connection: store.connectionConfig,
+            device: store.deviceInfo,
+            before,
+            attempted: setpointDraft,
+            reason: "parameters_not_synced",
+          },
+        });
         return;
       }
       if (!store.deviceInfo.writeEnabled) {
         store.setError("设备为只读模式，DPT 读取失败，不能写入");
+        await recordAuditEvent({
+          action: "write_setpoint",
+          outcome: "rejected",
+          details: {
+            connection: store.connectionConfig,
+            device: store.deviceInfo,
+            before,
+            attempted: setpointDraft,
+            reason: "device_read_only",
+          },
+        });
         return;
       }
       await api.writeSetpoint(setpointDraft);
       store.setSetpoint(setpointDraft);
       store.setError(undefined);
+      await recordAuditEvent({
+        action: "write_setpoint",
+        outcome: "success",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          after: setpointDraft,
+          rollback: "not_applicable",
+        },
+      });
     } catch (error) {
-      store.setError(readableError(error));
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "write_setpoint",
+        outcome: "failure",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          attempted: setpointDraft,
+          error: message,
+          rollback: "not_applicable",
+        },
+      });
     }
   }
 
   async function writePid() {
     if (!store.limits) return;
+    const before = { ...store.pid };
     if (!createPidSchema(store.limits).safeParse(pidDraft).success) {
       store.setError("PID 参数超出范围");
+      await recordAuditEvent({
+        action: "write_pid",
+        outcome: "rejected",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          attempted: pidDraft,
+          reason: "value_out_of_range",
+        },
+      });
       return;
     }
     try {
       if (store.parameterSync !== "synced") {
         store.setError("参数尚未同步，不能写入");
+        await recordAuditEvent({
+          action: "write_pid",
+          outcome: "rejected",
+          details: {
+            connection: store.connectionConfig,
+            device: store.deviceInfo,
+            before,
+            attempted: pidDraft,
+            reason: "parameters_not_synced",
+          },
+        });
         return;
       }
       if (!store.deviceInfo.writeEnabled) {
         store.setError("设备为只读模式，DPT 读取失败，不能写入");
+        await recordAuditEvent({
+          action: "write_pid",
+          outcome: "rejected",
+          details: {
+            connection: store.connectionConfig,
+            device: store.deviceInfo,
+            before,
+            attempted: pidDraft,
+            reason: "device_read_only",
+          },
+        });
         return;
       }
       await api.writePid(pidDraft);
       store.setPid(pidDraft);
       store.setError(undefined);
+      await recordAuditEvent({
+        action: "write_pid",
+        outcome: "success",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          after: pidDraft,
+          rollback: "not_applicable",
+        },
+      });
     } catch (error) {
-      store.setError(readableError(error));
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "write_pid",
+        outcome: "failure",
+        details: {
+          connection: store.connectionConfig,
+          device: store.deviceInfo,
+          before,
+          attempted: pidDraft,
+          error: message,
+          rollback: rollbackStatusFromError(error),
+        },
+      });
     }
   }
 
   async function setRunStatus(status: RunStatus) {
+    const details = {
+      connection: store.connectionConfig,
+      device: store.deviceInfo,
+      status,
+    };
     if (status === "run") {
       const totalMinutes = store.curve.reduce((sum, segment) => sum + segment.minutes, 0);
       const confirmed = window.confirm(
         `${zhCN.runConfirmation.title}\n${zhCN.runConfirmation.summary(store.curve.length, totalMinutes)}`,
       );
-      if (!confirmed) return;
+      if (!confirmed) {
+        await recordAuditEvent({
+          action: "run_status",
+          outcome: "rejected",
+          details: { ...details, reason: "user_cancelled" },
+        });
+        return;
+      }
     }
     try {
       await api.setRunStatus(status);
       store.setError(undefined);
+      await recordAuditEvent({ action: "run_status", outcome: "success", details });
     } catch (error) {
-      store.setError(readableError(error));
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "run_status",
+        outcome: "failure",
+        details: { ...details, error: message },
+      });
     }
   }
 

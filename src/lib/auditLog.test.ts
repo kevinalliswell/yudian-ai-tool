@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadAuditEntries, recordAuditEvent } from "./auditLog";
+import { loadAuditEntries, recordAuditEvent, rollbackStatusFromError } from "./auditLog";
 
 describe("auditLog", () => {
   afterEach(() => {
@@ -44,5 +44,10 @@ describe("auditLog", () => {
     const entries = await loadAuditEntries();
     expect(entries).toHaveLength(2);
     expect(entries.map((entry) => entry.outcome)).toEqual(["success", "failure"]);
+  });
+
+  it("detects rollback results from serialized backend errors", () => {
+    expect(rollbackStatusFromError({ message: "rollback succeeded" })).toBe("succeeded");
+    expect(rollbackStatusFromError({ message: "rollback failed: timeout" })).toBe("failed");
   });
 });
