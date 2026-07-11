@@ -28,4 +28,15 @@ describe("mockApi", () => {
 
     unlisten();
   });
+
+  it("requires a verified curve before running", async () => {
+    await mockApi.connect({ port: "COM_MOCK", slaveAddr: 1, baudrate: 9600 });
+
+    await expect(mockApi.setRunStatus("run")).rejects.toMatchObject({
+      kind: "invalidData",
+    });
+
+    await mockApi.downloadCurve([{ temperature: 120, minutes: 10 }]);
+    await expect(mockApi.setRunStatus("run")).resolves.toBeUndefined();
+  });
 });

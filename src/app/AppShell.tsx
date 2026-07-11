@@ -350,6 +350,7 @@ function ParametersPanel() {
       parameterSync: state.parameterSync,
       pid: state.pid,
       setpoint: state.setpoint,
+      curve: state.curve,
       setPid: state.setPid,
       setSetpoint: state.setSetpoint,
       setParameterSync: state.setParameterSync,
@@ -425,6 +426,13 @@ function ParametersPanel() {
   }
 
   async function setRunStatus(status: RunStatus) {
+    if (status === "run") {
+      const totalMinutes = store.curve.reduce((sum, segment) => sum + segment.minutes, 0);
+      const confirmed = window.confirm(
+        `确认运行当前曲线？\n${store.curve.length} 段，${totalMinutes} 分钟（${(totalMinutes / 60).toFixed(1)} 小时）`,
+      );
+      if (!confirmed) return;
+    }
     try {
       await api.setRunStatus(status);
       store.setError(undefined);
