@@ -59,3 +59,7 @@
 ## v0.3.12
 
 - Automated release from Conventional Commits.
+
+## v0.4.0
+
+- Automated release from Conventional Commits.
