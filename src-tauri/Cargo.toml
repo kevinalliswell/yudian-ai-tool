@@ -1,6 +1,6 @@
 [package]
 name = "yudian-ai-tool"
-version = "0.3.11"
+version = "0.3.12"
 description = "Yudian AI temperature controller desktop tool"
 authors = ["Yudian AI Tool Contributors"]
 edition = "2021"
