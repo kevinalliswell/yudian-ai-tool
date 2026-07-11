@@ -324,12 +324,24 @@ impl DeviceActor {
             .await?
             .first()
             .and_then(|raw| convert::parameter_from_raw(*raw))
-            .unwrap_or(0);
-        if pno <= 0 {
+            .ok_or_else(|| AppError::InvalidData("PNO has no valid data".to_string()))?;
+        if pno == 0 {
             return Ok(Vec::new());
         }
+        if pno < 0 {
+            return Err(AppError::InvalidData("PNO is negative".to_string()));
+        }
 
-        let count = (pno as usize).min(validate::limits().segment_max_count);
+        let max_count = validate::limits().segment_max_count;
+        if pno as usize > max_count {
+            return Err(AppError::out_of_range(
+                "curve segment count",
+                pno as f64,
+                0.0,
+                max_count as f64,
+            ));
+        }
+        let count = pno as usize;
         let mut segments = Vec::with_capacity(count);
         for index in 0..count {
             let result = backend
@@ -345,9 +357,23 @@ impl DeviceActor {
                             .get(1)
                             .and_then(|raw| convert::parameter_from_raw(*raw)),
                     ) {
+                        if minutes < 0 {
+                            warn!("curve segment {index} has negative minutes");
+                            sleep(Duration::from_millis(50)).await;
+                            return Err(AppError::InvalidData(format!(
+                                "curve segment {index} minutes is negative"
+                            )));
+                        }
+                        if validate::validate_temperature(temperature).is_err() {
+                            warn!("curve segment {index} temperature is out of range");
+                            sleep(Duration::from_millis(50)).await;
+                            return Err(AppError::InvalidData(format!(
+                                "curve segment {index} temperature is out of range"
+                            )));
+                        }
                         segments.push(Segment {
                             temperature,
-                            minutes: minutes.max(0) as i32,
+                            minutes: minutes as i32,
                         });
                     } else {
                         warn!("curve segment {index} contains invalid data");
@@ -514,6 +540,50 @@ mod tests {
         }
     }
 
+    struct CurveDataBackend {
+        registers: HashMap<u16, u16>,
+    }
+
+    impl CurveDataBackend {
+        fn with_pno(pno: u16) -> Self {
+            Self {
+                registers: HashMap::from([(registers::PNO, pno)]),
+            }
+        }
+
+        fn with_negative_minutes() -> Self {
+            Self {
+                registers: HashMap::from([
+                    (registers::PNO, 1),
+                    (registers::SP_START, 1000),
+                    (registers::SP_START + 1, 65535),
+                ]),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DeviceBackend for CurveDataBackend {
+        async fn connect(&mut self, _cfg: &ConnectionConfig) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn disconnect(&mut self) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn read_registers(&mut self, addr: u16, count: u16) -> Result<Vec<u16>, AppError> {
+            Ok((0..count)
+                .map(|offset| self.registers.get(&(addr + offset)).copied().unwrap_or(0))
+                .collect())
+        }
+
+        async fn write_register(&mut self, addr: u16, value: u16) -> Result<(), AppError> {
+            self.registers.insert(addr, value);
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl DeviceBackend for FailOnceBackend {
         async fn connect(&mut self, _cfg: &ConnectionConfig) -> Result<(), AppError> {
@@ -615,6 +685,49 @@ mod tests {
                 d: 4.5,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn upload_curve_rejects_segment_count_above_limit() {
+        let handle = spawn_test_backend(Box::new(CurveDataBackend::with_pno(51)));
+
+        let result = handle.upload_curve().await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::OutOfRange { label, .. }) if label == "curve segment count"
+        ));
+    }
+
+    #[tokio::test]
+    async fn upload_curve_accepts_empty_curve() {
+        let handle = spawn_test_backend(Box::new(CurveDataBackend::with_pno(0)));
+
+        assert!(handle.upload_curve().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_curve_rejects_missing_segment_count() {
+        let handle = spawn_test_backend(Box::new(CurveDataBackend::with_pno(32767)));
+
+        let result = handle.upload_curve().await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("PNO")
+        ));
+    }
+
+    #[tokio::test]
+    async fn upload_curve_rejects_negative_segment_minutes() {
+        let handle = spawn_test_backend(Box::new(CurveDataBackend::with_negative_minutes()));
+
+        let result = handle.upload_curve().await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("segment 0 minutes")
+        ));
     }
 
     #[tokio::test]
