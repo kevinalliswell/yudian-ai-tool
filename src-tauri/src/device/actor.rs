@@ -214,8 +214,33 @@ impl DeviceActor {
 
     async fn run(mut self) {
         while let Some(queued) = self.rx.recv().await {
-            let _ = timeout_at(queued.deadline, self.handle_request(queued.request)).await;
+            if Instant::now() >= queued.deadline {
+                continue;
+            }
+            if timeout_at(queued.deadline, self.handle_request(queued.request))
+                .await
+                .is_err()
+            {
+                self.reset_after_timeout().await;
+            }
         }
+    }
+
+    async fn reset_after_timeout(&mut self) {
+        if let Some(mut backend) = self.backend.take() {
+            if timeout_at(
+                Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+                backend.disconnect(),
+            )
+            .await
+            .is_err()
+            {
+                error!("disconnect after request timeout also timed out");
+            }
+        }
+        self.info = DeviceInfo::default();
+        self.curve_verified = false;
+        warn!("device backend reset after request timeout");
     }
 
     async fn handle_request(&mut self, request: DeviceRequest) {
@@ -1096,7 +1121,8 @@ mod tests {
         assert!(matches!(result, Err(AppError::Timeout)));
 
         let started = Instant::now();
-        assert!(handle.get_info().await.is_ok());
+        let info = handle.get_info().await.unwrap();
+        assert!(!info.connected);
         assert!(started.elapsed() < Duration::from_millis(500));
     }
 }
