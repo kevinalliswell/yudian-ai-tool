@@ -22,6 +22,7 @@ pub fn run() {
             commands::get_device_info,
             commands::get_validation_limits,
             commands::read_pid,
+            commands::read_setpoint,
             commands::write_setpoint,
             commands::write_pid,
             commands::set_run_status,
