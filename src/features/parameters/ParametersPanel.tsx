@@ -256,18 +256,21 @@ export function ParametersPanel() {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-2">
-      <div className="flex items-center justify-between gap-3 xl:col-span-2">
+    <div className="parameters-layout">
+      <div className="sync-bar">
         <div>
-          <p className="font-medium">设备参数同步</p>
-          <p className="text-sm text-muted-foreground">
-            {store.parameterSync === "synced"
-              ? "已读取当前设备值"
-              : store.parameterSync === "syncing"
-                ? "正在读取设备值"
-                : store.parameterSync === "failed"
-                  ? "读取失败，请重试"
-                  : "尚未读取设备值"}
+          <p className="surface-kicker">参数同步</p>
+          <p className="sync-state">
+            <span className="status-dot status-dot-live" />
+            <strong>
+              {store.parameterSync === "synced"
+                ? "已读取当前设备值"
+                : store.parameterSync === "syncing"
+                  ? "正在读取设备值"
+                  : store.parameterSync === "failed"
+                    ? "读取失败，请重试"
+                    : "尚未读取设备值"}
+            </strong>
           </p>
         </div>
         <Button
@@ -278,11 +281,18 @@ export function ParametersPanel() {
           读取当前值
         </Button>
       </div>
-      <div className="rounded-md border bg-background p-4">
-        <p className="mb-3 font-medium">给定值 SP1</p>
-        <div className="flex gap-2">
+      <section className="surface parameter-surface">
+        <div className="surface-header">
+          <div>
+            <p className="surface-kicker">SETPOINT</p>
+            <h3 className="surface-title">给定值 SP1</h3>
+          </div>
+          <span className="section-number">03</span>
+        </div>
+        <div className="action-row">
           <input
-            className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3"
+            className="control-input"
+            aria-label="给定值 SP1"
             type="number"
             value={store.parameterSync === "synced" ? setpointDraft : ""}
             disabled={
@@ -303,10 +313,17 @@ export function ParametersPanel() {
             设置
           </Button>
         </div>
-      </div>
-      <div className="rounded-md border bg-background p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="font-medium">PID 参数</p>
+      </section>
+      <section className="surface parameter-surface">
+        <div className="surface-header">
+          <div>
+            <p className="surface-kicker">CONTROL LOOP</p>
+            <h3 className="surface-title">PID 参数</h3>
+          </div>
+          <span className="section-number">04</span>
+        </div>
+        <div className="action-row parameter-heading">
+          <span className="surface-subtitle">比例、积分、微分</span>
           <Button
             variant="outline"
             size="sm"
@@ -316,12 +333,13 @@ export function ParametersPanel() {
             读取
           </Button>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="pid-grid">
           {(["p", "i", "d"] as const).map((key) => (
-            <label key={key} className="grid gap-1 text-sm uppercase">
+            <label key={key} className="field">
               {key}
               <input
-                className="h-10 rounded-md border bg-background px-3"
+                className="control-input"
+                aria-label={`PID ${key.toUpperCase()}`}
                 type="number"
                 value={store.parameterSync === "synced" ? pidDraft[key] : ""}
                 disabled={
@@ -347,10 +365,16 @@ export function ParametersPanel() {
         >
           写入 PID
         </Button>
-      </div>
-      <div className="rounded-md border bg-background p-4 xl:col-span-2">
-        <p className="mb-3 font-medium">运行状态</p>
-        <div className="flex flex-wrap gap-2">
+      </section>
+      <section className="surface parameter-surface parameter-surface-wide">
+        <div className="surface-header">
+          <div>
+            <p className="surface-kicker">EXECUTION</p>
+            <h3 className="surface-title">运行状态</h3>
+          </div>
+          <span className="section-number">05</span>
+        </div>
+        <div className="action-row">
           <Button
             onClick={() => setRunStatus("run")}
             disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
@@ -374,7 +398,7 @@ export function ParametersPanel() {
             停止
           </Button>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

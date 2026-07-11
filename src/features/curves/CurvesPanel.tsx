@@ -156,81 +156,101 @@ export function CurvesPanel() {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[280px_1fr]">
-      <div className="rounded-md border bg-background p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="font-medium">曲线预设</p>
-          <Button size="icon" variant="outline" onClick={savePreset}>
-            <Save className="h-4 w-4" />
+    <div className="curves-layout">
+      <aside className="surface preset-surface">
+        <div className="preset-heading">
+          <div>
+            <p className="surface-kicker">LIBRARY</p>
+            <h3 className="preset-title">曲线预设</h3>
+          </div>
+          <Button size="icon" variant="outline" onClick={savePreset} aria-label="保存曲线预设">
+            <Save className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>
-        <div className="grid gap-2">
-          {store.presets.map((preset) => (
-            <button
-              key={preset.id}
-              className="rounded-md border p-3 text-left text-sm hover:bg-muted"
-              onClick={() => store.setCurve(preset.segments.map((segment) => ({ ...segment })))}
-            >
-              <span className="block font-medium">{preset.name}</span>
-              <span className="text-muted-foreground">{preset.description}</span>
-            </button>
-          ))}
+        <div className="preset-list">
+          {store.presets.length ? (
+            store.presets.map((preset) => (
+              <button
+                key={preset.id}
+                className="preset-item"
+                onClick={() => store.setCurve(preset.segments.map((segment) => ({ ...segment })))}
+              >
+                <strong>{preset.name}</strong>
+                <span>{preset.description}</span>
+              </button>
+            ))
+          ) : (
+            <div className="empty-state">暂无已保存曲线</div>
+          )}
         </div>
-      </div>
+      </aside>
 
-      <div className="rounded-md border bg-background p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <section className="surface editor-surface">
+        <div className="editor-heading">
           <div>
-            <p className="font-medium">段编辑</p>
-            <p className="text-sm text-muted-foreground">
+            <p className="surface-kicker">PROFILE EDITOR</p>
+            <h3 className="editor-title">段编辑</h3>
+            <p className="editor-summary">
               {store.curve.length} 段 · {totalMinutes} 分钟 · {(totalMinutes / 60).toFixed(1)} 小时
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="action-row">
             <Button variant="outline" onClick={uploadCurve} disabled={!store.deviceInfo.connected}>
-              <Upload className="mr-2 h-4 w-4" />
+              <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
               上传
             </Button>
             <Button
               onClick={downloadCurve}
               disabled={!store.deviceInfo.connected || !store.deviceInfo.writeEnabled}
             >
-              <Download className="mr-2 h-4 w-4" />
+              <Download className="mr-2 h-4 w-4" aria-hidden="true" />
               下载
             </Button>
           </div>
         </div>
-        <div className="grid gap-2">
+        <div className="segment-list">
           {store.curve.map((segment, index) => (
-            <div
-              key={index}
-              className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_1fr_auto]"
-            >
-              <input
-                className="h-10 rounded-md border bg-background px-3"
-                type="number"
-                value={segment.temperature}
-                onChange={(event) =>
-                  updateSegment(index, { temperature: Number(event.target.value) })
-                }
-              />
-              <input
-                className="h-10 rounded-md border bg-background px-3"
-                type="number"
-                value={segment.minutes}
-                onChange={(event) => updateSegment(index, { minutes: Number(event.target.value) })}
-              />
-              <Button variant="outline" size="icon" onClick={() => removeSegment(index)}>
-                <Trash2 className="h-4 w-4" />
+            <div key={index} className="segment-row">
+              <label className="field">
+                温度
+                <input
+                  className="control-input"
+                  aria-label={`第 ${index + 1} 段温度`}
+                  type="number"
+                  value={segment.temperature}
+                  onChange={(event) =>
+                    updateSegment(index, { temperature: Number(event.target.value) })
+                  }
+                />
+              </label>
+              <label className="field">
+                时间（分钟）
+                <input
+                  className="control-input"
+                  aria-label={`第 ${index + 1} 段时间`}
+                  type="number"
+                  value={segment.minutes}
+                  onChange={(event) =>
+                    updateSegment(index, { minutes: Number(event.target.value) })
+                  }
+                />
+              </label>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={`删除第 ${index + 1} 段`}
+                onClick={() => removeSegment(index)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
               </Button>
             </div>
           ))}
         </div>
         <Button className="mt-3" variant="secondary" onClick={addSegment}>
-          <Plus className="mr-2 h-4 w-4" />
+          <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
           增加段
         </Button>
-      </div>
+      </section>
     </div>
   );
 }

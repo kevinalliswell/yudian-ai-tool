@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
-import { Activity, Cable, ListChecks, Route } from "lucide-react";
+import { Activity, AlertCircle, Cable, Gauge, ListChecks, Route } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConnectionPanel } from "@/features/connection/ConnectionPanel";
 import { CurvesPanel } from "@/features/curves/CurvesPanel";
@@ -22,6 +21,13 @@ const sectionIcons = {
 } satisfies Record<ShellSection, typeof Cable>;
 
 const sections = Object.keys(sectionIcons) as ShellSection[];
+
+const sectionDescriptions: Record<ShellSection, string> = {
+  connection: "配置串口通讯参数，确认设备状态与写入权限。",
+  monitor: "查看过程变量、给定值和输出变化。",
+  parameters: "同步控制参数，执行写入与运行控制。",
+  curves: "编辑、上传并验证温控曲线段。",
+};
 
 export function AppShell() {
   const activeSection = useAppStore((state) => state.activeSection);
@@ -88,57 +94,80 @@ export function AppShell() {
   const Icon = sectionIcons[activeSection];
 
   return (
-    <main className="min-h-screen bg-background">
-      <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-5 py-5">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b pb-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-normal">{zhCN.appName}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">{zhCN.subtitle}</p>
+    <main className="app-shell">
+      <div className="app-frame">
+        <header className="topbar">
+          <div className="brand-lockup">
+            <div className="brand-mark">
+              <Gauge className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div>
+              <p className="eyebrow">YUDIAN / CONTROL SUITE</p>
+              <h1 className="brand-title">{zhCN.appName}</h1>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={connected ? "default" : "outline"}>
-              {connected ? modelName || "已连接" : "未连接"}
-            </Badge>
-            <Badge variant="secondary">{runtimeLabel}</Badge>
+          <div className="topbar-meta">
+            <div className={`status-chip ${connected ? "status-chip-connected" : ""}`}>
+              <span className={`status-dot ${connected ? "status-dot-live" : ""}`} />
+              <span>{connected ? modelName || "已连接" : "未连接"}</span>
+            </div>
+            <div className="status-chip">{runtimeLabel}</div>
           </div>
         </header>
 
-        <section className="grid flex-1 gap-5 py-5 lg:grid-cols-[230px_1fr]">
-          <nav className="flex gap-2 overflow-x-auto lg:flex-col lg:overflow-visible">
-            {sections.map((section) => {
-              const NavIcon = sectionIcons[section];
-              const selected = activeSection === section;
-              return (
-                <Button
-                  key={section}
-                  className="shrink-0 justify-start gap-2"
-                  variant={selected ? "default" : "ghost"}
-                  onClick={() => setActiveSection(section)}
-                >
-                  <NavIcon className="h-4 w-4" aria-hidden="true" />
-                  {zhCN.sections[section]}
-                </Button>
-              );
-            })}
-          </nav>
+        <div className="workspace">
+          <aside className="sidebar">
+            <p className="sidebar-label">控制台</p>
+            <nav className="nav-list" aria-label="主导航">
+              {sections.map((section) => {
+                const NavIcon = sectionIcons[section];
+                const selected = activeSection === section;
+                return (
+                  <Button
+                    key={section}
+                    className={`nav-item ${selected ? "nav-item-active" : ""}`}
+                    variant="ghost"
+                    aria-current={selected ? "page" : undefined}
+                    onClick={() => setActiveSection(section)}
+                  >
+                    <NavIcon className="h-4 w-4" aria-hidden="true" />
+                    {zhCN.sections[section]}
+                  </Button>
+                );
+              })}
+            </nav>
+            <div className="sidebar-footer">
+              <strong>AI 温控设备</strong>
+              串口控制 · 曲线运行 · 实时采集
+            </div>
+          </aside>
 
-          <section className="min-w-0 rounded-lg border bg-card p-5 text-card-foreground shadow-sm">
-            <div className="mb-5 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <Icon className="h-5 w-5 text-primary" aria-hidden="true" />
-                <h2 className="text-xl font-semibold tracking-normal">
-                  {zhCN.sections[activeSection]}
-                </h2>
+          <section className="content-area">
+            <div className="page-heading">
+              <div>
+                <p className="page-kicker">OPERATIONS / {zhCN.sections[activeSection]}</p>
+                <div className="flex items-center gap-2">
+                  <Icon className="mt-2 h-5 w-5 text-primary" aria-hidden="true" />
+                  <h2 className="page-title">{zhCN.sections[activeSection]}</h2>
+                </div>
+                <p className="page-description">{sectionDescriptions[activeSection]}</p>
               </div>
-              {error ? <Badge variant="outline">{error}</Badge> : null}
+              {error ? (
+                <div className="error-banner" role="alert">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>{error}</span>
+                </div>
+              ) : null}
             </div>
 
-            {activeSection === "connection" && <ConnectionPanel />}
-            {activeSection === "monitor" && <MonitorPanel />}
-            {activeSection === "parameters" && <ParametersPanel />}
-            {activeSection === "curves" && <CurvesPanel />}
+            <div className="panel-content">
+              {activeSection === "connection" && <ConnectionPanel />}
+              {activeSection === "monitor" && <MonitorPanel />}
+              {activeSection === "parameters" && <ParametersPanel />}
+              {activeSection === "curves" && <CurvesPanel />}
+            </div>
           </section>
-        </section>
+        </div>
       </div>
     </main>
   );

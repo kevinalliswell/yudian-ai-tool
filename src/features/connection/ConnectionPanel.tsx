@@ -128,66 +128,70 @@ export function ConnectionPanel() {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="grid gap-2 text-sm">
-          串口
-          <select
-            className="h-10 rounded-md border bg-background px-3"
-            value={store.connectionConfig.port}
-            onChange={(event) => store.setConnectionConfig({ port: event.target.value })}
-            disabled={store.deviceInfo.connected}
-          >
-            {store.ports.map((port) => (
-              <option key={port.name} value={port.name}>
-                {port.name}
-                {port.description ? ` · ${port.description}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="grid gap-2 text-sm">
-          从站地址
-          <input
-            className="h-10 rounded-md border bg-background px-3"
-            type="number"
-            min={store.limits?.slaveAddrMin}
-            max={store.limits?.slaveAddrMax}
-            value={store.connectionConfig.slaveAddr}
-            onChange={(event) =>
-              store.setConnectionConfig({ slaveAddr: Number(event.target.value) })
-            }
-            disabled={store.deviceInfo.connected}
-          />
-        </label>
-        <label className="grid gap-2 text-sm">
-          波特率
-          <input
-            className="h-10 rounded-md border bg-muted px-3 text-muted-foreground"
-            value={store.connectionConfig.baudrate}
-            readOnly
-          />
-        </label>
-        <div className="flex items-end gap-2">
-          <Button
-            variant="outline"
-            onClick={refreshPorts}
-            disabled={busy || store.deviceInfo.connected}
-          >
-            <RefreshCw className="mr-2 h-4 w-4" />
-            刷新
-          </Button>
-          {store.deviceInfo.connected ? (
-            <Button variant="secondary" onClick={disconnect} disabled={busy}>
-              断开
-            </Button>
-          ) : (
-            <Button onClick={connect} disabled={busy || !store.connectionConfig.port}>
-              连接
-            </Button>
-          )}
+    <div className="connection-layout">
+      <section className="surface command-surface">
+        <div className="surface-header">
+          <div>
+            <p className="surface-kicker">通讯配置</p>
+            <h3 className="surface-title">连接设备</h3>
+            <p className="surface-subtitle">选择端口并确认从站地址</p>
+          </div>
+          <span className="section-number">01</span>
         </div>
-      </div>
+        <div className="field-grid field-grid-two">
+          <label className="field">
+            串口
+            <select
+              value={store.connectionConfig.port}
+              onChange={(event) => store.setConnectionConfig({ port: event.target.value })}
+              disabled={store.deviceInfo.connected}
+            >
+              {store.ports.map((port) => (
+                <option key={port.name} value={port.name}>
+                  {port.name}
+                  {port.description ? ` · ${port.description}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            从站地址
+            <input
+              type="number"
+              min={store.limits?.slaveAddrMin}
+              max={store.limits?.slaveAddrMax}
+              value={store.connectionConfig.slaveAddr}
+              onChange={(event) =>
+                store.setConnectionConfig({ slaveAddr: Number(event.target.value) })
+              }
+              disabled={store.deviceInfo.connected}
+            />
+          </label>
+          <label className="field field-readonly">
+            波特率
+            <input value={store.connectionConfig.baudrate} readOnly />
+          </label>
+          <div className="action-row items-end">
+            <Button
+              variant="outline"
+              onClick={refreshPorts}
+              disabled={busy || store.deviceInfo.connected}
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              刷新
+            </Button>
+            {store.deviceInfo.connected ? (
+              <Button variant="secondary" onClick={disconnect} disabled={busy}>
+                断开
+              </Button>
+            ) : (
+              <Button onClick={connect} disabled={busy || !store.connectionConfig.port}>
+                连接
+              </Button>
+            )}
+          </div>
+        </div>
+      </section>
 
       <StatusBox />
     </div>
@@ -198,17 +202,28 @@ function StatusBox() {
   const deviceInfo = useDeviceStore((state) => state.deviceInfo);
   const latestReading = useDeviceStore((state) => state.latestReading);
   return (
-    <div className="rounded-md border bg-background p-4">
-      <p className="text-sm text-muted-foreground">设备状态</p>
-      <div className="mt-3 grid gap-2 text-sm">
-        <Row label="连接" value={deviceInfo.connected ? "已连接" : "未连接"} />
+    <aside className="surface readiness-surface">
+      <div className="surface-header">
+        <div>
+          <p className="surface-kicker">设备状态</p>
+          <h3 className="surface-title">就绪检查</h3>
+        </div>
+        <span className="section-number">02</span>
+      </div>
+      <div className="readiness-state">
+        <span className={`status-dot ${deviceInfo.connected ? "status-dot-live" : ""}`} />
+        <span>
+          当前状态：<strong>{deviceInfo.connected ? "已连接" : "未连接"}</strong>
+        </span>
+      </div>
+      <div className="status-list">
         <Row label="写入权限" value={deviceInfo.writeEnabled ? "可写" : "只读"} />
         <Row label="型号" value={deviceInfo.modelName || "--"} />
         <Row label="小数点" value={`${deviceInfo.decimalPoint}`} />
         <Row label="缩放" value={`${deviceInfo.scaleFactor}`} />
         <Row label="最近读数" value={formatValue(latestReading?.pv, " ℃")} />
       </div>
-    </div>
+    </aside>
   );
 }
 
@@ -216,7 +231,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-4">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
+      <strong>{value}</strong>
     </div>
   );
 }

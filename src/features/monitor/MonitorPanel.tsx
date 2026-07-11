@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 import { formatValue } from "@/features/shared/display";
@@ -8,19 +7,24 @@ export function MonitorPanel() {
   const readings = useDeviceStore((state) => state.readings);
   const deviceInfo = useDeviceStore((state) => state.deviceInfo);
   return (
-    <div className="grid gap-5">
-      <div className="grid gap-3 md:grid-cols-3">
+    <div>
+      <div className="metric-grid">
         <Metric label="PV 测量值" value={formatValue(latestReading?.pv, " ℃")} />
         <Metric label="SV 给定值" value={formatValue(latestReading?.sv, " ℃")} />
         <Metric label="MV 输出值" value={formatValue(latestReading?.mv, " %")} />
       </div>
-      <div className="rounded-md border bg-background p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="font-medium">PV 时序</p>
-          <Badge variant="outline">{deviceInfo.connected ? `${readings.length} 点` : "--"}</Badge>
+      <section className="surface chart-surface">
+        <div className="chart-heading">
+          <div>
+            <p className="surface-kicker">PROCESS TREND</p>
+            <h3 className="chart-title">PV 时序</h3>
+          </div>
+          <span className="chart-count">
+            {deviceInfo.connected ? `${readings.length} 点` : "--"}
+          </span>
         </div>
         <PvChart readings={readings} />
-      </div>
+      </section>
     </div>
   );
 }
@@ -41,10 +45,13 @@ function PvChart({ readings }: { readings: Array<{ pv?: number | null }> }) {
 
   return (
     <svg
-      className="h-64 w-full rounded-md border bg-card"
+      className="pv-chart"
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
+      role="img"
+      aria-label="PV 温度趋势图"
     >
+      <title>PV 温度趋势图</title>
       <path
         d={path}
         fill="none"
@@ -58,9 +65,9 @@ function PvChart({ readings }: { readings: Array<{ pv?: number | null }> }) {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-background p-4">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="mt-2 text-3xl font-semibold tracking-normal">{value}</p>
-    </div>
+    <article className="metric-tile">
+      <p className="metric-label">{label}</p>
+      <p className="metric-value">{value}</p>
+    </article>
   );
 }
