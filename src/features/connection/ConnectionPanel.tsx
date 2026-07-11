@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { recordAuditEvent } from "@/lib/auditLog";
 import { createSlaveAddressSchema } from "@/lib/validation";
 import { useDeviceStore } from "@/stores/deviceStore";
 
@@ -47,9 +48,18 @@ export function ConnectionPanel() {
     );
     if (!parsed.success) {
       store.setError("从站地址超出范围");
+      await recordAuditEvent({
+        action: "connect",
+        outcome: "rejected",
+        details: {
+          connection: { ...store.connectionConfig },
+          reason: "slave_address_out_of_range",
+        },
+      });
       return;
     }
     setBusy(true);
+    let parameterSync: "synced" | "failed" = "failed";
     try {
       const info = await api.connect(store.connectionConfig);
       store.setDeviceInfo(info);
@@ -59,14 +69,34 @@ export function ConnectionPanel() {
         store.setSetpoint(setpoint);
         store.setPid(pid);
         store.setParameterSync("synced");
+        parameterSync = "synced";
         store.setError(undefined);
       } catch (error) {
         store.setParameterSync("failed");
         store.setError(`参数同步失败：${readableError(error)}`);
       }
       await api.startMonitoring(1000);
+      await recordAuditEvent({
+        action: "connect",
+        outcome: "success",
+        details: {
+          connection: { ...store.connectionConfig },
+          device: info,
+          status: `parameter_sync_${parameterSync}`,
+        },
+      });
     } catch (error) {
-      store.setError(readableError(error));
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "connect",
+        outcome: "failure",
+        details: {
+          connection: { ...store.connectionConfig },
+          device: store.deviceInfo,
+          error: message,
+        },
+      });
     } finally {
       setBusy(false);
     }
@@ -74,11 +104,24 @@ export function ConnectionPanel() {
 
   async function disconnect() {
     setBusy(true);
+    const device = store.deviceInfo;
+    const connection = { ...store.connectionConfig };
     try {
       await api.disconnect();
       store.resetConnectionData();
+      await recordAuditEvent({
+        action: "disconnect",
+        outcome: "success",
+        details: { connection, device },
+      });
     } catch (error) {
-      store.setError(readableError(error));
+      const message = readableError(error);
+      store.setError(message);
+      await recordAuditEvent({
+        action: "disconnect",
+        outcome: "failure",
+        details: { connection, device, error: message },
+      });
     } finally {
       setBusy(false);
     }
