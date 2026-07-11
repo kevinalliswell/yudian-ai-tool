@@ -296,20 +296,15 @@ impl DeviceActor {
     }
 
     fn ensure_writable(&self) -> Result<(), AppError> {
-        if !self.dpt_valid {
-            return Err(AppError::InvalidData(
-                "device is read-only because DPT could not be read".to_string(),
-            ));
-        }
-        if !self
-            .info
-            .model_code
-            .map(registers::is_supported_model)
-            .unwrap_or(false)
-        {
-            return Err(AppError::InvalidData(
-                "device is read-only because its model is not supported".to_string(),
-            ));
+        if !self.info.write_enabled {
+            let reason = if !self.dpt_valid {
+                "DPT could not be read"
+            } else {
+                "its model is not supported"
+            };
+            return Err(AppError::InvalidData(format!(
+                "device is read-only because {reason}"
+            )));
         }
         Ok(())
     }
@@ -847,6 +842,7 @@ mod tests {
             backend,
             DeviceInfo {
                 connected: true,
+                write_enabled: true,
                 model_code: Some(registers::MODEL_AI_516P),
                 model_name: Some("AI-516P".to_string()),
                 ..DeviceInfo::default()
