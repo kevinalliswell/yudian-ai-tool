@@ -43,6 +43,7 @@ interface DeviceState {
 
 const defaultInfo: DeviceInfo = {
   connected: false,
+  writeEnabled: false,
   decimalPoint: 1,
   scaleFactor: 1,
 };

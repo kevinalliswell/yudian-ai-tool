@@ -5,7 +5,7 @@ import { useDeviceStore } from "./deviceStore";
 describe("deviceStore parameter synchronization", () => {
   it("clears synchronized parameters when connection data resets", () => {
     const store = useDeviceStore.getState();
-    store.setDeviceInfo({ connected: true, decimalPoint: 1, scaleFactor: 1 });
+    store.setDeviceInfo({ connected: true, writeEnabled: true, decimalPoint: 1, scaleFactor: 1 });
     store.setPid({ p: 12, i: 300, d: 4.5 });
     store.setSetpoint(125);
     store.setParameterSync("synced");
