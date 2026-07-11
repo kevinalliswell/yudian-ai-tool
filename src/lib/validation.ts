@@ -23,7 +23,7 @@ export function createCurveSchema(limits: ValidationLimits) {
     .array(
       z.object({
         temperature: createTemperatureSchema(limits),
-        minutes: z.number().finite().int().min(0),
+        minutes: z.number().finite().int().min(0).max(limits.segmentMinutesMax),
       }),
     )
     .min(1)

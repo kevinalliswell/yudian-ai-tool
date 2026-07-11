@@ -47,6 +47,7 @@ export interface ValidationLimits {
   pidIMax: number;
   pidDMax: number;
   segmentMaxCount: number;
+  segmentMinutesMax: number;
   slaveAddrMin: number;
   slaveAddrMax: number;
   refreshIntervalMinMs: number;

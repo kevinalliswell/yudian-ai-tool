@@ -12,6 +12,7 @@ pub struct ValidationLimits {
     pub pid_i_max: u32,
     pub pid_d_max: f64,
     pub segment_max_count: usize,
+    pub segment_minutes_max: i32,
     pub slave_addr_min: u8,
     pub slave_addr_max: u8,
     pub refresh_interval_min_ms: u32,
@@ -26,6 +27,7 @@ impl Default for ValidationLimits {
             pid_i_max: 9999,
             pid_d_max: 999.9,
             segment_max_count: 50,
+            segment_minutes_max: u16::MAX as i32,
             slave_addr_min: 1,
             slave_addr_max: 80,
             refresh_interval_min_ms: 200,
@@ -119,12 +121,12 @@ pub fn validate_segments(segments: &[Segment]) -> Result<(), AppError> {
                 limits.temp_max,
             )
         })?;
-        if segment.minutes < 0 {
+        if segment.minutes < 0 || segment.minutes > limits.segment_minutes_max {
             return Err(AppError::out_of_range(
                 format!("segment {index} minutes"),
                 segment.minutes as f64,
                 0.0,
-                i32::MAX as f64,
+                limits.segment_minutes_max as f64,
             ));
         }
     }
@@ -180,6 +182,18 @@ mod tests {
             minutes: -1,
         }];
         assert!(validate_segments(&negative_minutes).is_err());
+
+        let max_minutes = [Segment {
+            temperature: 100.0,
+            minutes: u16::MAX as i32,
+        }];
+        assert!(validate_segments(&max_minutes).is_ok());
+
+        let excessive_minutes = [Segment {
+            temperature: 100.0,
+            minutes: u16::MAX as i32 + 1,
+        }];
+        assert!(validate_segments(&excessive_minutes).is_err());
     }
 
     #[test]
