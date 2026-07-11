@@ -48,6 +48,7 @@ export function AppShell() {
   const connected = useDeviceStore((state) => state.deviceInfo.connected);
   const modelName = useDeviceStore((state) => state.deviceInfo.modelName);
   const error = useDeviceStore((state) => state.error);
+  const limits = useDeviceStore((state) => state.limits);
   const presets = useDeviceStore((state) => state.presets);
   const hydrated = useRef(false);
 
@@ -57,12 +58,12 @@ export function AppShell() {
     const actions = useDeviceStore.getState();
 
     async function boot() {
-      const [limits, ports, presets, info] = await Promise.all([
+      const [limits, ports, info] = await Promise.all([
         api.getValidationLimits(),
         api.listSerialPorts().catch(() => []),
-        loadCurvePresets(),
         api.getDeviceInfo().catch(() => actions.deviceInfo),
       ]);
+      const presets = await loadCurvePresets(limits);
       if (!mounted) return;
       actions.setLimits(limits);
       actions.setPorts(ports);
@@ -97,9 +98,9 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
-    if (!hydrated.current) return;
-    void saveCurvePresets(presets);
-  }, [presets]);
+    if (!hydrated.current || !limits) return;
+    void saveCurvePresets(presets, limits);
+  }, [limits, presets]);
 
   const Icon = sectionIcons[activeSection];
 
