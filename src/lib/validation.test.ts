@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import snapshot from "@/mocks/snapshots/normal.json";
-import { createCurveSchema, createSlaveAddressSchema, createTemperatureSchema } from "./validation";
+import {
+  createCurveSchema,
+  createPidSchema,
+  createSlaveAddressSchema,
+  createTemperatureSchema,
+} from "./validation";
 
 const limits = snapshot.validationLimits;
 
@@ -12,6 +17,8 @@ describe("validation schemas", () => {
     expect(schema.safeParse(1800).success).toBe(true);
     expect(schema.safeParse(-200.1).success).toBe(false);
     expect(schema.safeParse(1800.1).success).toBe(false);
+    expect(schema.safeParse(Number.NaN).success).toBe(false);
+    expect(schema.safeParse(Number.POSITIVE_INFINITY).success).toBe(false);
   });
 
   it("validates slave address boundaries from injected limits", () => {
@@ -34,5 +41,12 @@ describe("validation schemas", () => {
         .success,
     ).toBe(false);
     expect(schema.safeParse([{ temperature: 100, minutes: -1 }]).success).toBe(false);
+    expect(schema.safeParse([{ temperature: Number.NaN, minutes: 1 }]).success).toBe(false);
+  });
+
+  it("rejects non-finite PID values", () => {
+    const schema = createPidSchema(limits);
+    expect(schema.safeParse({ p: Number.NaN, i: 0, d: 0 }).success).toBe(false);
+    expect(schema.safeParse({ p: 0, i: 0, d: Number.POSITIVE_INFINITY }).success).toBe(false);
   });
 });

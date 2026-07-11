@@ -7,14 +7,14 @@ export function createSlaveAddressSchema(limits: ValidationLimits) {
 }
 
 export function createTemperatureSchema(limits: ValidationLimits) {
-  return z.number().min(limits.tempMin).max(limits.tempMax);
+  return z.number().finite().min(limits.tempMin).max(limits.tempMax);
 }
 
 export function createPidSchema(limits: ValidationLimits) {
   return z.object({
-    p: z.number().min(0).max(limits.pidPMax),
-    i: z.number().int().min(0).max(limits.pidIMax),
-    d: z.number().min(0).max(limits.pidDMax),
+    p: z.number().finite().min(0).max(limits.pidPMax),
+    i: z.number().finite().int().min(0).max(limits.pidIMax),
+    d: z.number().finite().min(0).max(limits.pidDMax),
   });
 }
 
@@ -23,7 +23,7 @@ export function createCurveSchema(limits: ValidationLimits) {
     .array(
       z.object({
         temperature: createTemperatureSchema(limits),
-        minutes: z.number().int().min(0),
+        minutes: z.number().finite().int().min(0),
       }),
     )
     .min(1)

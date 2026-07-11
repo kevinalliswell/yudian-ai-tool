@@ -39,6 +39,11 @@ pub fn limits() -> ValidationLimits {
 
 pub fn validate_temperature(value: f64) -> Result<(), AppError> {
     let limits = limits();
+    if !value.is_finite() {
+        return Err(AppError::InvalidData(
+            "temperature must be finite".to_string(),
+        ));
+    }
     if value < limits.temp_min || value > limits.temp_max {
         Err(AppError::out_of_range(
             "temperature",
@@ -53,6 +58,12 @@ pub fn validate_temperature(value: f64) -> Result<(), AppError> {
 
 pub fn validate_pid(p: f64, i: u32, d: f64) -> Result<(), AppError> {
     let limits = limits();
+    if !p.is_finite() {
+        return Err(AppError::InvalidData("PID P must be finite".to_string()));
+    }
+    if !d.is_finite() {
+        return Err(AppError::InvalidData("PID D must be finite".to_string()));
+    }
     if p < 0.0 || p > limits.pid_p_max {
         return Err(AppError::out_of_range("PID P", p, 0.0, limits.pid_p_max));
     }
@@ -137,6 +148,9 @@ mod tests {
         assert!(validate_temperature(1800.0).is_ok());
         assert!(validate_temperature(-200.1).is_err());
         assert!(validate_temperature(1800.1).is_err());
+        assert!(validate_temperature(f64::NAN).is_err());
+        assert!(validate_temperature(f64::INFINITY).is_err());
+        assert!(validate_temperature(f64::NEG_INFINITY).is_err());
     }
 
     #[test]
@@ -155,11 +169,24 @@ mod tests {
         }];
         assert!(validate_segments(&invalid_temp).is_err());
 
+        let non_finite_temp = [Segment {
+            temperature: f64::NAN,
+            minutes: 0,
+        }];
+        assert!(validate_segments(&non_finite_temp).is_err());
+
         let negative_minutes = [Segment {
             temperature: 100.0,
             minutes: -1,
         }];
         assert!(validate_segments(&negative_minutes).is_err());
+    }
+
+    #[test]
+    fn validates_pid_finite_values() {
+        assert!(validate_pid(f64::NAN, 0, 0.0).is_err());
+        assert!(validate_pid(0.0, 0, f64::INFINITY).is_err());
+        assert!(validate_pid(0.0, 0, f64::NEG_INFINITY).is_err());
     }
 
     #[test]

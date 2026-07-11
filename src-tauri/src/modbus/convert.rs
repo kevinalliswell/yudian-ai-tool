@@ -54,6 +54,11 @@ pub fn read_scaled(raw: u16, scale: ScaleConfig) -> Option<f64> {
 }
 
 pub fn write_scaled(value: f64, scale: ScaleConfig) -> Result<u16, AppError> {
+    if !value.is_finite() {
+        return Err(AppError::InvalidData(
+            "scaled value must be finite".to_string(),
+        ));
+    }
     let factor = 10_f64.powi(scale.decimal_point as i32);
     let rounded = (value * factor).round() as i32;
     to_uint16(rounded * scale.scale_factor as i32, "scaled value")
@@ -85,6 +90,9 @@ pub fn d_seconds_from_raw(raw: u16) -> Option<f64> {
 }
 
 pub fn d_seconds_to_raw(seconds: f64) -> Result<u16, AppError> {
+    if !seconds.is_finite() {
+        return Err(AppError::InvalidData("PID D must be finite".to_string()));
+    }
     to_uint16((seconds * 10.0).round() as i32, "PID D")
 }
 
@@ -173,6 +181,9 @@ mod tests {
             to_uint16(-32769, "x"),
             Err(AppError::OutOfRange { .. })
         ));
+        assert!(write_scaled(f64::NAN, ScaleConfig::default()).is_err());
+        assert!(write_scaled(f64::INFINITY, ScaleConfig::default()).is_err());
+        assert!(d_seconds_to_raw(f64::NEG_INFINITY).is_err());
     }
 
     #[test]
