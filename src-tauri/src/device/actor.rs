@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout_at, Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::backend::{create_backend, BackendMode, DeviceBackend};
@@ -9,9 +9,14 @@ use crate::error::AppError;
 use crate::modbus::{convert, registers, validate};
 use crate::types::{ConnectionConfig, DeviceInfo, PidValues, Reading, RunStatus, Segment};
 
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const CONNECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const CURVE_REQUEST_BASE_TIMEOUT_SECS: u64 = 5;
+const CURVE_REQUEST_PER_SEGMENT_TIMEOUT_SECS: u64 = 2;
+
 #[derive(Clone)]
 pub struct DeviceHandle {
-    tx: mpsc::Sender<DeviceRequest>,
+    tx: mpsc::Sender<QueuedRequest>,
 }
 
 impl DeviceHandle {
@@ -24,73 +29,122 @@ impl DeviceHandle {
 
     async fn request<T>(
         &self,
+        request_timeout: Duration,
         build: impl FnOnce(oneshot::Sender<Result<T, AppError>>) -> DeviceRequest,
     ) -> Result<T, AppError>
     where
         T: Send + 'static,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(build(reply_tx))
+        let deadline = Instant::now() + request_timeout;
+        timeout_at(
+            deadline,
+            self.tx.send(QueuedRequest {
+                deadline,
+                request: build(reply_tx),
+            }),
+        )
+        .await
+        .map_err(|_| AppError::Timeout)?
+        .map_err(|_| AppError::Backend("device actor is not running".to_string()))?;
+        timeout_at(deadline, reply_rx)
             .await
-            .map_err(|_| AppError::Backend("device actor is not running".to_string()))?;
-        reply_rx
-            .await
-            .map_err(|_| AppError::Backend("device actor dropped response".to_string()))?
+            .map_err(|_| AppError::Timeout)?
+            .map_err(|_| {
+                if Instant::now() >= deadline {
+                    AppError::Timeout
+                } else {
+                    AppError::Backend("device actor dropped response".to_string())
+                }
+            })?
     }
 
     pub async fn connect(&self, cfg: ConnectionConfig) -> Result<DeviceInfo, AppError> {
-        self.request(|reply| DeviceRequest::Connect { cfg, reply })
-            .await
+        self.request(CONNECT_REQUEST_TIMEOUT, |reply| DeviceRequest::Connect {
+            cfg,
+            reply,
+        })
+        .await
     }
 
     pub async fn disconnect(&self) -> Result<(), AppError> {
-        self.request(|reply| DeviceRequest::Disconnect { reply })
-            .await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| DeviceRequest::Disconnect {
+            reply,
+        })
+        .await
     }
 
     pub async fn get_info(&self) -> Result<DeviceInfo, AppError> {
-        self.request(|reply| DeviceRequest::GetInfo { reply }).await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| DeviceRequest::GetInfo {
+            reply,
+        })
+        .await
     }
 
     pub async fn read_reading(&self) -> Result<Reading, AppError> {
-        self.request(|reply| DeviceRequest::ReadReading { reply })
-            .await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| {
+            DeviceRequest::ReadReading { reply }
+        })
+        .await
     }
 
     pub async fn read_pid(&self) -> Result<PidValues, AppError> {
-        self.request(|reply| DeviceRequest::ReadPid { reply }).await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| DeviceRequest::ReadPid {
+            reply,
+        })
+        .await
     }
 
     pub async fn read_setpoint(&self) -> Result<f64, AppError> {
-        self.request(|reply| DeviceRequest::ReadSetpoint { reply })
-            .await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| {
+            DeviceRequest::ReadSetpoint { reply }
+        })
+        .await
     }
 
     pub async fn write_setpoint(&self, value: f64) -> Result<(), AppError> {
-        self.request(|reply| DeviceRequest::WriteSetpoint { value, reply })
-            .await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| {
+            DeviceRequest::WriteSetpoint { value, reply }
+        })
+        .await
     }
 
     pub async fn write_pid(&self, values: PidValues) -> Result<(), AppError> {
-        self.request(|reply| DeviceRequest::WritePid { values, reply })
-            .await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| DeviceRequest::WritePid {
+            values,
+            reply,
+        })
+        .await
     }
 
     pub async fn set_run_status(&self, status: RunStatus) -> Result<(), AppError> {
-        self.request(|reply| DeviceRequest::SetRunStatus { status, reply })
-            .await
+        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| {
+            DeviceRequest::SetRunStatus { status, reply }
+        })
+        .await
     }
 
     pub async fn upload_curve(&self) -> Result<Vec<Segment>, AppError> {
-        self.request(|reply| DeviceRequest::UploadCurve { reply })
-            .await
+        self.request(
+            curve_request_timeout(validate::limits().segment_max_count),
+            |reply| DeviceRequest::UploadCurve { reply },
+        )
+        .await
     }
 
     pub async fn download_curve(&self, segments: Vec<Segment>) -> Result<(), AppError> {
-        self.request(|reply| DeviceRequest::DownloadCurve { segments, reply })
-            .await
+        self.request(curve_request_timeout(segments.len()), |reply| {
+            DeviceRequest::DownloadCurve { segments, reply }
+        })
+        .await
     }
+}
+
+fn curve_request_timeout(segment_count: usize) -> Duration {
+    Duration::from_secs(
+        CURVE_REQUEST_BASE_TIMEOUT_SECS
+            + segment_count.max(1) as u64 * CURVE_REQUEST_PER_SEGMENT_TIMEOUT_SECS,
+    )
 }
 
 enum DeviceRequest {
@@ -134,16 +188,21 @@ enum DeviceRequest {
     },
 }
 
+struct QueuedRequest {
+    deadline: Instant,
+    request: DeviceRequest,
+}
+
 struct DeviceActor {
     mode: BackendMode,
     backend: Option<Box<dyn DeviceBackend>>,
     info: DeviceInfo,
     curve_verified: bool,
-    rx: mpsc::Receiver<DeviceRequest>,
+    rx: mpsc::Receiver<QueuedRequest>,
 }
 
 impl DeviceActor {
-    fn new(mode: BackendMode, rx: mpsc::Receiver<DeviceRequest>) -> Self {
+    fn new(mode: BackendMode, rx: mpsc::Receiver<QueuedRequest>) -> Self {
         Self {
             mode,
             backend: None,
@@ -154,41 +213,70 @@ impl DeviceActor {
     }
 
     async fn run(mut self) {
-        while let Some(request) = self.rx.recv().await {
-            match request {
-                DeviceRequest::Connect { cfg, reply } => {
-                    let _ = reply.send(self.connect(cfg).await);
-                }
-                DeviceRequest::Disconnect { reply } => {
-                    let _ = reply.send(self.disconnect().await);
-                }
-                DeviceRequest::GetInfo { reply } => {
-                    let _ = reply.send(Ok(self.info.clone()));
-                }
-                DeviceRequest::ReadReading { reply } => {
-                    let _ = reply.send(self.read_reading().await);
-                }
-                DeviceRequest::ReadPid { reply } => {
-                    let _ = reply.send(self.read_pid().await);
-                }
-                DeviceRequest::ReadSetpoint { reply } => {
-                    let _ = reply.send(self.read_setpoint().await);
-                }
-                DeviceRequest::WriteSetpoint { value, reply } => {
-                    let _ = reply.send(self.write_setpoint(value).await);
-                }
-                DeviceRequest::WritePid { values, reply } => {
-                    let _ = reply.send(self.write_pid(values).await);
-                }
-                DeviceRequest::SetRunStatus { status, reply } => {
-                    let _ = reply.send(self.set_run_status(status).await);
-                }
-                DeviceRequest::UploadCurve { reply } => {
-                    let _ = reply.send(self.upload_curve().await);
-                }
-                DeviceRequest::DownloadCurve { segments, reply } => {
-                    let _ = reply.send(self.download_curve(segments).await);
-                }
+        while let Some(queued) = self.rx.recv().await {
+            if Instant::now() >= queued.deadline {
+                continue;
+            }
+            if timeout_at(queued.deadline, self.handle_request(queued.request))
+                .await
+                .is_err()
+            {
+                self.reset_after_timeout().await;
+            }
+        }
+    }
+
+    async fn reset_after_timeout(&mut self) {
+        if let Some(mut backend) = self.backend.take() {
+            if timeout_at(
+                Instant::now() + DEFAULT_REQUEST_TIMEOUT,
+                backend.disconnect(),
+            )
+            .await
+            .is_err()
+            {
+                error!("disconnect after request timeout also timed out");
+            }
+        }
+        self.info = DeviceInfo::default();
+        self.curve_verified = false;
+        warn!("device backend reset after request timeout");
+    }
+
+    async fn handle_request(&mut self, request: DeviceRequest) {
+        match request {
+            DeviceRequest::Connect { cfg, reply } => {
+                let _ = reply.send(self.connect(cfg).await);
+            }
+            DeviceRequest::Disconnect { reply } => {
+                let _ = reply.send(self.disconnect().await);
+            }
+            DeviceRequest::GetInfo { reply } => {
+                let _ = reply.send(Ok(self.info.clone()));
+            }
+            DeviceRequest::ReadReading { reply } => {
+                let _ = reply.send(self.read_reading().await);
+            }
+            DeviceRequest::ReadPid { reply } => {
+                let _ = reply.send(self.read_pid().await);
+            }
+            DeviceRequest::ReadSetpoint { reply } => {
+                let _ = reply.send(self.read_setpoint().await);
+            }
+            DeviceRequest::WriteSetpoint { value, reply } => {
+                let _ = reply.send(self.write_setpoint(value).await);
+            }
+            DeviceRequest::WritePid { values, reply } => {
+                let _ = reply.send(self.write_pid(values).await);
+            }
+            DeviceRequest::SetRunStatus { status, reply } => {
+                let _ = reply.send(self.set_run_status(status).await);
+            }
+            DeviceRequest::UploadCurve { reply } => {
+                let _ = reply.send(self.upload_curve().await);
+            }
+            DeviceRequest::DownloadCurve { segments, reply } => {
+                let _ = reply.send(self.download_curve(segments).await);
             }
         }
     }
@@ -626,6 +714,8 @@ mod tests {
         registers: HashMap<u16, u16>,
     }
 
+    struct SlowBackend;
+
     impl CurveDataBackend {
         fn with_pno(pno: u16) -> Self {
             Self {
@@ -653,6 +743,27 @@ mod tests {
                     (registers::SP_START + 1, 65535),
                 ]),
             }
+        }
+    }
+
+    #[async_trait]
+    impl DeviceBackend for SlowBackend {
+        async fn connect(&mut self, _cfg: &ConnectionConfig) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn disconnect(&mut self) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn read_registers(&mut self, _addr: u16, _count: u16) -> Result<Vec<u16>, AppError> {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            Ok(vec![0; 3])
+        }
+
+        async fn write_register(&mut self, _addr: u16, _value: u16) -> Result<(), AppError> {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            Ok(())
         }
     }
 
@@ -999,5 +1110,19 @@ mod tests {
         let handle = DeviceHandle::spawn(BackendMode::MockOffline);
         let err = handle.connect(mock_connection()).await.unwrap_err();
         assert!(matches!(err, AppError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn request_times_out_when_backend_does_not_respond() {
+        let handle = spawn_test_backend(Box::new(SlowBackend));
+
+        let result = handle.read_reading().await;
+
+        assert!(matches!(result, Err(AppError::Timeout)));
+
+        let started = Instant::now();
+        let info = handle.get_info().await.unwrap();
+        assert!(!info.connected);
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 }
