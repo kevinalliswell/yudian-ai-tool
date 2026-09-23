@@ -1,105 +1,165 @@
 # Changelog
 
-## v0.1.0
+自 v0.6.0 起由 [release-please](https://github.com/googleapis/release-please) 根据 Conventional Commits 自动维护；更早的版本由提交历史整理。
 
-- Initial Tauri v2 + React/TypeScript + Rust implementation.
+## [0.5.0](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.5.0) (2026-07-11)
 
-## v0.2.0
+### 新功能
 
-- Automated release from Conventional Commits.
+- audit industrial control actions
+- add structured audit log storage
 
-## v0.3.0
+## [0.4.9](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.9) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 重构
 
-## v0.3.1
+- split app shell feature panels
 
-- Automated release from Conventional Commits.
+## [0.4.8](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.8) (2026-07-11)
 
-## v0.3.2
+### 问题修复
 
-- Automated release from Conventional Commits.
+- enable tauri content security policy
 
-## v0.3.3
+## [0.4.7](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.7) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 问题修复
 
-## v0.3.4
+- default missing curve time limits
+- enforce the encoded curve time limit
 
-- Automated release from Conventional Commits.
+## [0.4.6](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.6) (2026-07-11)
 
-## v0.3.5
+### 问题修复
 
-- Automated release from Conventional Commits.
+- reject non-finite control values
 
-## v0.3.6
+## [0.4.5](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.5) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 问题修复
 
-## v0.3.7
+- preserve long monitoring intervals during backoff
+- back off and stop after monitor failures
 
-- Automated release from Conventional Commits.
+## [0.4.4](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.4) (2026-07-11)
 
-## v0.3.8
+### 问题修复
 
-- Automated release from Conventional Commits.
+- keep unknown models read-only
 
-## v0.3.9
+### 重构
 
-- Automated release from Conventional Commits.
+- use device write permission as source of truth
 
-## v0.3.10
+## [0.4.3](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.3) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 问题修复
 
-## v0.3.11
+- explain read-only write rejection
+- keep devices read-only when DPT is unavailable
 
-- Automated release from Conventional Commits.
+## [0.4.2](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.2) (2026-07-11)
 
-## v0.3.12
+### 问题修复
 
-- Automated release from Conventional Commits.
+- reset device backend after request timeout
+- time out queued device requests
 
-## v0.4.0
+## [0.4.1](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.1) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 问题修复
 
-## v0.4.1
+- avoid float mismatch during curve verification
+- guard run command with safety checks
 
-- Automated release from Conventional Commits.
+## [0.4.0](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.4.0) (2026-07-11)
 
-## v0.4.2
+### 新功能
 
-- Automated release from Conventional Commits.
+- synchronize device parameters after connect
 
-## v0.4.3
+## [0.3.12](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.12) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 问题修复
 
-## v0.4.4
+- validate persisted curve presets
 
-- Automated release from Conventional Commits.
+## [0.3.11](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.11) (2026-07-11)
 
-## v0.4.5
+### 问题修复
 
-- Automated release from Conventional Commits.
+- reject invalid curve data
 
-## v0.4.6
+## [0.3.10](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.10) (2026-07-11)
 
-- Automated release from Conventional Commits.
+### 问题修复
 
-## v0.4.7
+- make PID writes transactional
 
-- Automated release from Conventional Commits.
+## [0.3.9](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.9) (2026-07-10)
 
-## v0.4.8
+### 问题修复
 
-- Automated release from Conventional Commits.
+- make curve downloads transactional (#6)
 
-## v0.4.9
+## [0.3.8](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.8) (2026-07-10)
 
-- Automated release from Conventional Commits.
+### 性能优化
 
-## v0.5.0
+- 组件改用细粒度 selector，避免实时读数触发全量重渲染 (#4)
 
-- Automated release from Conventional Commits.
+## [0.3.7](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.7) (2026-07-04)
+
+### 问题修复
+
+- 修复错误传递崩溃、UI 错误显示与启动竞态 (#2)
+
+## [0.3.6](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.6) (2026-07-04)
+
+### 问题修复
+
+- keep local unsigned builds simple
+
+## [0.3.5](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.5) (2026-07-04)
+
+### 问题修复
+
+- upload updater manifest
+
+## [0.3.4](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.4) (2026-07-04)
+
+### 问题修复
+
+- enable updater artifacts
+
+## [0.3.3](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.3) (2026-07-04)
+
+### 问题修复
+
+- configure updater signing key
+
+## [0.3.2](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.2) (2026-07-04)
+
+### 问题修复
+
+- allow unsigned macos release builds
+
+## [0.3.1](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.1) (2026-07-04)
+
+### 问题修复
+
+- install macos universal rust targets
+
+## [0.3.0](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.3.0) (2026-07-04)
+
+### 新功能
+
+- scaffold yudian ai desktop tool
+
+### 问题修复
+
+- make release checkout use pushed commit
+
+## 0.1.0 – 0.2.0 (2026-07-04)
+
+- Tauri v2 + React/TypeScript + Rust 初始实现（这两个版本未打 tag）。
