@@ -117,6 +117,8 @@ pub async fn start_monitoring(
                     emit_reading(&app, &reading);
                     sleep(interval).await;
                 }
+                // A write transaction owns the bus; the link itself is fine.
+                Err(err) if !counts_as_monitor_failure(&err) => sleep(interval).await,
                 Err(err) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     error!("monitoring read failed: {err}");
@@ -179,6 +181,10 @@ fn monitor_backoff(interval: Duration, consecutive_failures: u32) -> Duration {
     interval.saturating_mul(1u32 << shift).min(cap)
 }
 
+fn counts_as_monitor_failure(error: &AppError) -> bool {
+    !matches!(error, AppError::Busy)
+}
+
 fn should_emit_monitor_error(consecutive_failures: u32) -> bool {
     consecutive_failures <= 3 || consecutive_failures == 5
 }
@@ -214,6 +220,13 @@ mod tests {
             monitor_backoff(Duration::from_secs(60), 2),
             Duration::from_secs(60)
         );
+    }
+
+    #[test]
+    fn busy_bus_does_not_count_towards_monitor_disconnect() {
+        assert!(!counts_as_monitor_failure(&AppError::Busy));
+        assert!(counts_as_monitor_failure(&AppError::Timeout));
+        assert!(counts_as_monitor_failure(&AppError::NotConnected));
     }
 
     #[test]

@@ -1,7 +1,10 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{sleep, timeout_at, Duration, Instant};
+use tokio::time::{sleep, timeout, timeout_at, Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::backend::{create_backend, BackendMode, DeviceBackend};
@@ -11,22 +14,54 @@ use crate::types::{ConnectionConfig, DeviceInfo, PidValues, Reading, RunStatus, 
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const CURVE_REQUEST_BASE_TIMEOUT_SECS: u64 = 5;
-const CURVE_REQUEST_PER_SEGMENT_TIMEOUT_SECS: u64 = 2;
+const CURVE_UPLOAD_BASE_TIMEOUT_SECS: u64 = 5;
+const CURVE_UPLOAD_PER_SEGMENT_TIMEOUT_SECS: u64 = 2;
+/// How long a write transaction may wait in the queue before the caller
+/// gives up; an abandoned transaction is skipped without touching the bus.
+const TRANSACTION_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound for a single backend call inside a write transaction.
+const TRANSACTION_OP_TIMEOUT: Duration = Duration::from_secs(1);
+const SEGMENT_THROTTLE: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub struct DeviceHandle {
     tx: mpsc::Sender<QueuedRequest>,
+    in_transaction: Arc<AtomicBool>,
 }
 
 impl DeviceHandle {
     pub fn spawn(mode: BackendMode) -> Self {
-        let (tx, rx) = mpsc::channel(64);
-        let actor = DeviceActor::new(mode, rx);
+        let (handle, rx) = Self::channel();
+        let actor = DeviceActor::new(mode, rx, handle.in_transaction.clone());
         tauri::async_runtime::spawn(actor.run());
-        Self { tx }
+        handle
     }
 
+    fn channel() -> (Self, mpsc::Receiver<QueuedRequest>) {
+        let (tx, rx) = mpsc::channel(64);
+        let handle = Self {
+            tx,
+            in_transaction: Arc::new(AtomicBool::new(false)),
+        };
+        (handle, rx)
+    }
+
+    fn is_busy(&self) -> bool {
+        self.in_transaction.load(Ordering::Acquire)
+    }
+
+    async fn enqueue(&self, queued: QueuedRequest) -> Result<(), AppError> {
+        if self.is_busy() {
+            return Err(AppError::Busy);
+        }
+        timeout_at(queued.deadline, self.tx.send(queued))
+            .await
+            .map_err(|_| AppError::Timeout)?
+            .map_err(|_| AppError::Backend("device actor is not running".to_string()))
+    }
+
+    /// Queues a request that is safe to cancel: reads and single-register
+    /// writes. The actor drops it once `request_timeout` has passed.
     async fn request<T>(
         &self,
         request_timeout: Duration,
@@ -37,26 +72,64 @@ impl DeviceHandle {
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         let deadline = Instant::now() + request_timeout;
-        timeout_at(
+        self.enqueue(QueuedRequest {
             deadline,
-            self.tx.send(QueuedRequest {
-                deadline,
-                request: build(reply_tx),
-            }),
-        )
-        .await
-        .map_err(|_| AppError::Timeout)?
-        .map_err(|_| AppError::Backend("device actor is not running".to_string()))?;
-        timeout_at(deadline, reply_rx)
-            .await
-            .map_err(|_| AppError::Timeout)?
-            .map_err(|_| {
-                if Instant::now() >= deadline {
-                    AppError::Timeout
-                } else {
-                    AppError::Backend("device actor dropped response".to_string())
-                }
-            })?
+            started: None,
+            request: build(reply_tx),
+        })
+        .await?;
+        let reply = timeout_at(deadline, reply_rx).await;
+        match reply {
+            Ok(Ok(result)) => result,
+            // A write transaction started while this request waited in the queue.
+            _ if self.is_busy() => Err(AppError::Busy),
+            Err(_) => Err(AppError::Timeout),
+            Ok(Err(_)) if Instant::now() >= deadline => Err(AppError::Timeout),
+            Ok(Err(_)) => Err(AppError::Backend(
+                "device actor dropped response".to_string(),
+            )),
+        }
+    }
+
+    /// Queues a multi-register write that must run to completion once it
+    /// starts, so that a failure is always followed by its rollback.
+    async fn transaction<T>(
+        &self,
+        ceiling: Duration,
+        build: impl FnOnce(oneshot::Sender<Result<T, AppError>>) -> DeviceRequest,
+    ) -> Result<T, AppError>
+    where
+        T: Send + 'static,
+    {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let (started_tx, mut started_rx) = oneshot::channel();
+        let queue_deadline = Instant::now() + TRANSACTION_QUEUE_TIMEOUT;
+        self.enqueue(QueuedRequest {
+            deadline: queue_deadline,
+            started: Some(started_tx),
+            request: build(reply_tx),
+        })
+        .await?;
+
+        let started = match timeout_at(queue_deadline, &mut started_rx).await {
+            Ok(result) => result.is_ok(),
+            // The actor may have started it right at the deadline.
+            Err(_) => started_rx.try_recv().is_ok(),
+        };
+        if !started {
+            // Dropping `started_rx` makes the actor skip the request unwritten.
+            return Err(AppError::Timeout);
+        }
+
+        match timeout(ceiling, reply_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(AppError::Backend(
+                "device actor dropped response".to_string(),
+            )),
+            Err(_) => Err(AppError::OutcomeUnknown(
+                "write transaction is still running; re-read the device".to_string(),
+            )),
+        }
     }
 
     pub async fn connect(&self, cfg: ConnectionConfig) -> Result<DeviceInfo, AppError> {
@@ -110,7 +183,7 @@ impl DeviceHandle {
     }
 
     pub async fn write_pid(&self, values: PidValues) -> Result<(), AppError> {
-        self.request(DEFAULT_REQUEST_TIMEOUT, |reply| DeviceRequest::WritePid {
+        self.transaction(pid_transaction_ceiling(), |reply| DeviceRequest::WritePid {
             values,
             reply,
         })
@@ -125,26 +198,107 @@ impl DeviceHandle {
     }
 
     pub async fn upload_curve(&self) -> Result<Vec<Segment>, AppError> {
-        self.request(
-            curve_request_timeout(validate::limits().segment_max_count),
-            |reply| DeviceRequest::UploadCurve { reply },
-        )
+        self.request(curve_upload_timeout(), |reply| DeviceRequest::UploadCurve {
+            reply,
+        })
         .await
     }
 
     pub async fn download_curve(&self, segments: Vec<Segment>) -> Result<(), AppError> {
-        self.request(curve_request_timeout(segments.len()), |reply| {
+        self.transaction(curve_transaction_ceiling(segments.len()), |reply| {
             DeviceRequest::DownloadCurve { segments, reply }
         })
         .await
     }
 }
 
-fn curve_request_timeout(segment_count: usize) -> Duration {
+fn curve_upload_timeout() -> Duration {
     Duration::from_secs(
-        CURVE_REQUEST_BASE_TIMEOUT_SECS
-            + segment_count.max(1) as u64 * CURVE_REQUEST_PER_SEGMENT_TIMEOUT_SECS,
+        CURVE_UPLOAD_BASE_TIMEOUT_SECS
+            + validate::limits().segment_max_count as u64 * CURVE_UPLOAD_PER_SEGMENT_TIMEOUT_SECS,
     )
+}
+
+/// Worst case for a transaction whose every backend call runs into
+/// `TRANSACTION_OP_TIMEOUT`, plus slack for scheduling.
+fn transaction_ceiling(ops: usize, throttles: usize) -> Duration {
+    TRANSACTION_OP_TIMEOUT * ops as u32
+        + SEGMENT_THROTTLE * throttles as u32
+        + Duration::from_secs(5)
+}
+
+fn pid_transaction_ceiling() -> Duration {
+    // Backup read, then 3 writes + read-back forward and again for rollback.
+    transaction_ceiling(1 + 4 + 4, 0)
+}
+
+fn curve_transaction_ceiling(new_count: usize) -> Duration {
+    // The backup can hold up to the maximum curve, which rollback rewrites.
+    let backup = validate::limits().segment_max_count;
+    // Per segment: 2 writes + 1 read-back and a final read; plus Pno write + read.
+    let write_ops = |count: usize| 4 * count + 2;
+    transaction_ceiling(
+        1 + backup + write_ops(new_count) + write_ops(backup),
+        backup + new_count + backup,
+    )
+}
+
+/// Bounds every backend call inside a write transaction, so a hung call
+/// becomes an ordinary error that the transaction answers with its rollback
+/// instead of stalling or being cancelled halfway.
+struct GuardedBackend<'a> {
+    inner: &'a mut dyn DeviceBackend,
+    timed_out: bool,
+}
+
+impl<'a> GuardedBackend<'a> {
+    fn new(inner: &'a mut dyn DeviceBackend) -> Self {
+        Self {
+            inner,
+            timed_out: false,
+        }
+    }
+}
+
+#[async_trait]
+impl DeviceBackend for GuardedBackend<'_> {
+    async fn connect(&mut self, cfg: &ConnectionConfig) -> Result<(), AppError> {
+        self.inner.connect(cfg).await
+    }
+
+    async fn disconnect(&mut self) -> Result<(), AppError> {
+        self.inner.disconnect().await
+    }
+
+    async fn read_registers(&mut self, addr: u16, count: u16) -> Result<Vec<u16>, AppError> {
+        match timeout(
+            TRANSACTION_OP_TIMEOUT,
+            self.inner.read_registers(addr, count),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.timed_out = true;
+                Err(AppError::Timeout)
+            }
+        }
+    }
+
+    async fn write_register(&mut self, addr: u16, value: u16) -> Result<(), AppError> {
+        match timeout(
+            TRANSACTION_OP_TIMEOUT,
+            self.inner.write_register(addr, value),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.timed_out = true;
+                Err(AppError::Timeout)
+            }
+        }
+    }
 }
 
 enum DeviceRequest {
@@ -189,7 +343,12 @@ enum DeviceRequest {
 }
 
 struct QueuedRequest {
+    /// Cancellable requests: dropped once passed. Transactions: the queue
+    /// deadline after which the caller has stopped waiting for the start.
     deadline: Instant,
+    /// Present for write transactions; the actor signals here before the
+    /// first bus operation and skips the request if the caller is gone.
+    started: Option<oneshot::Sender<()>>,
     request: DeviceRequest,
 }
 
@@ -199,17 +358,27 @@ struct DeviceActor {
     info: DeviceInfo,
     dpt_valid: bool,
     curve_verified: bool,
+    /// Set when a transaction abandoned a hung backend call; a late reply may
+    /// still arrive, so the link is reset once the transaction finishes.
+    link_suspect: bool,
+    in_transaction: Arc<AtomicBool>,
     rx: mpsc::Receiver<QueuedRequest>,
 }
 
 impl DeviceActor {
-    fn new(mode: BackendMode, rx: mpsc::Receiver<QueuedRequest>) -> Self {
+    fn new(
+        mode: BackendMode,
+        rx: mpsc::Receiver<QueuedRequest>,
+        in_transaction: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             mode,
             backend: None,
             info: DeviceInfo::default(),
             dpt_valid: false,
             curve_verified: false,
+            link_suspect: false,
+            in_transaction,
             rx,
         }
     }
@@ -219,16 +388,36 @@ impl DeviceActor {
             if Instant::now() >= queued.deadline {
                 continue;
             }
-            if timeout_at(queued.deadline, self.handle_request(queued.request))
-                .await
-                .is_err()
-            {
-                self.reset_after_timeout().await;
+            match queued.started {
+                Some(started) => self.run_transaction(started, queued.request).await,
+                None => {
+                    if timeout_at(queued.deadline, self.handle_request(queued.request))
+                        .await
+                        .is_err()
+                    {
+                        self.reset_link("request timed out").await;
+                    }
+                }
             }
         }
     }
 
-    async fn reset_after_timeout(&mut self) {
+    /// Runs a write transaction to completion with no outer timeout: each
+    /// backend call is bounded by `GuardedBackend`, so a failure always
+    /// reaches the rollback instead of being cancelled mid-write.
+    async fn run_transaction(&mut self, started: oneshot::Sender<()>, request: DeviceRequest) {
+        self.in_transaction.store(true, Ordering::Release);
+        if started.send(()).is_ok() {
+            self.handle_request(request).await;
+        }
+        self.in_transaction.store(false, Ordering::Release);
+        if std::mem::take(&mut self.link_suspect) {
+            self.reset_link("backend call timed out during a write transaction")
+                .await;
+        }
+    }
+
+    async fn reset_link(&mut self, reason: &str) {
         if let Some(mut backend) = self.backend.take() {
             if timeout_at(
                 Instant::now() + DEFAULT_REQUEST_TIMEOUT,
@@ -237,13 +426,14 @@ impl DeviceActor {
             .await
             .is_err()
             {
-                error!("disconnect after request timeout also timed out");
+                error!("disconnect during link reset also timed out");
             }
         }
         self.info = DeviceInfo::default();
         self.dpt_valid = false;
         self.curve_verified = false;
-        warn!("device backend reset after request timeout");
+        self.link_suspect = false;
+        warn!("device backend reset: {reason}");
     }
 
     async fn handle_request(&mut self, request: DeviceRequest) {
@@ -432,30 +622,12 @@ impl DeviceActor {
     async fn write_pid(&mut self, values: PidValues) -> Result<(), AppError> {
         self.ensure_writable()?;
         validate::validate_pid(values.p, values.i, values.d)?;
-        let scale = self.scale();
-        let previous: [u16; 3] = self
-            .backend()?
-            .read_registers(registers::P, 3)
-            .await?
-            .try_into()
-            .map_err(|_| AppError::InvalidData("PID backup has insufficient data".to_string()))?;
-        let encoded = encode_pid(&values, scale)?;
+        let encoded = encode_pid(&values, self.scale())?;
         let backend = self.backend()?;
-
-        match write_pid_transaction(backend.as_mut(), encoded).await {
-            Ok(()) => Ok(()),
-            Err(write_error) => {
-                warn!("PID write failed, restoring previous values: {write_error}");
-                match write_pid_transaction(backend.as_mut(), previous).await {
-                    Ok(()) => Err(AppError::Backend(format!(
-                        "PID write failed: {write_error}; rollback succeeded"
-                    ))),
-                    Err(rollback_error) => Err(AppError::Backend(format!(
-                        "PID write failed: {write_error}; rollback failed: {rollback_error}"
-                    ))),
-                }
-            }
-        }
+        let mut guarded = GuardedBackend::new(backend.as_mut());
+        let result = pid_transaction(&mut guarded, encoded).await;
+        self.link_suspect |= guarded.timed_out;
+        result
     }
 
     async fn set_run_status(&mut self, status: RunStatus) -> Result<(), AppError> {
@@ -495,80 +667,7 @@ impl DeviceActor {
 
     async fn upload_curve(&mut self) -> Result<Vec<Segment>, AppError> {
         let scale = self.scale();
-        let backend = self.backend()?;
-        let pno = backend
-            .read_registers(registers::PNO, 1)
-            .await?
-            .first()
-            .and_then(|raw| convert::parameter_from_raw(*raw))
-            .ok_or_else(|| AppError::InvalidData("PNO has no valid data".to_string()))?;
-        if pno == 0 {
-            return Ok(Vec::new());
-        }
-        if pno < 0 {
-            return Err(AppError::InvalidData("PNO is negative".to_string()));
-        }
-
-        let max_count = validate::limits().segment_max_count;
-        if pno as usize > max_count {
-            return Err(AppError::out_of_range(
-                "curve segment count",
-                pno as f64,
-                0.0,
-                max_count as f64,
-            ));
-        }
-        let count = pno as usize;
-        let mut segments = Vec::with_capacity(count);
-        for index in 0..count {
-            let result = backend
-                .read_registers(registers::SP_START + index as u16 * 2, 2)
-                .await;
-            match result {
-                Ok(values) => {
-                    if let (Some(temperature), Some(minutes)) = (
-                        values
-                            .first()
-                            .and_then(|raw| convert::read_scaled(*raw, scale)),
-                        values
-                            .get(1)
-                            .and_then(|raw| convert::parameter_from_raw(*raw)),
-                    ) {
-                        if minutes < 0 {
-                            warn!("curve segment {index} has negative minutes");
-                            sleep(Duration::from_millis(50)).await;
-                            return Err(AppError::InvalidData(format!(
-                                "curve segment {index} minutes is negative"
-                            )));
-                        }
-                        if validate::validate_temperature(temperature).is_err() {
-                            warn!("curve segment {index} temperature is out of range");
-                            sleep(Duration::from_millis(50)).await;
-                            return Err(AppError::InvalidData(format!(
-                                "curve segment {index} temperature is out of range"
-                            )));
-                        }
-                        segments.push(Segment {
-                            temperature,
-                            minutes: minutes as i32,
-                        });
-                    } else {
-                        warn!("curve segment {index} contains invalid data");
-                        sleep(Duration::from_millis(50)).await;
-                        return Err(AppError::InvalidData(format!(
-                            "curve segment {index} contains invalid data"
-                        )));
-                    }
-                }
-                Err(err) => {
-                    warn!("curve segment {index} read failed: {err}");
-                    sleep(Duration::from_millis(50)).await;
-                    return Err(err);
-                }
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-        Ok(segments)
+        read_curve(self.backend()?.as_mut(), scale).await
     }
 
     async fn download_curve(&mut self, segments: Vec<Segment>) -> Result<(), AppError> {
@@ -576,26 +675,140 @@ impl DeviceActor {
         self.curve_verified = false;
         validate::validate_segments(&segments)?;
         let scale = self.scale();
-        let previous_segments = self.upload_curve().await?;
         let encoded_segments = encode_segments(&segments, scale)?;
-        let encoded_previous = encode_segments(&previous_segments, scale)?;
         let backend = self.backend()?;
+        let mut guarded = GuardedBackend::new(backend.as_mut());
+        let result = curve_transaction(&mut guarded, scale, &encoded_segments).await;
+        self.link_suspect |= guarded.timed_out;
+        self.curve_verified = result.is_ok();
+        result
+    }
+}
 
-        match write_curve_transaction(backend, &encoded_segments).await {
-            Ok(()) => {
-                self.curve_verified = true;
-                Ok(())
-            }
-            Err(write_error) => {
-                warn!("curve download failed, restoring previous curve: {write_error}");
-                match write_curve_transaction(backend, &encoded_previous).await {
-                    Ok(()) => Err(AppError::Backend(format!(
-                        "curve download failed: {write_error}; rollback succeeded"
-                    ))),
-                    Err(rollback_error) => Err(AppError::Backend(format!(
-                        "curve download failed: {write_error}; rollback failed: {rollback_error}"
-                    ))),
+async fn read_curve(
+    backend: &mut dyn DeviceBackend,
+    scale: convert::ScaleConfig,
+) -> Result<Vec<Segment>, AppError> {
+    let pno = backend
+        .read_registers(registers::PNO, 1)
+        .await?
+        .first()
+        .and_then(|raw| convert::parameter_from_raw(*raw))
+        .ok_or_else(|| AppError::InvalidData("PNO has no valid data".to_string()))?;
+    if pno == 0 {
+        return Ok(Vec::new());
+    }
+    if pno < 0 {
+        return Err(AppError::InvalidData("PNO is negative".to_string()));
+    }
+
+    let max_count = validate::limits().segment_max_count;
+    if pno as usize > max_count {
+        return Err(AppError::out_of_range(
+            "curve segment count",
+            pno as f64,
+            0.0,
+            max_count as f64,
+        ));
+    }
+    let count = pno as usize;
+    let mut segments = Vec::with_capacity(count);
+    for index in 0..count {
+        let result = backend
+            .read_registers(registers::SP_START + index as u16 * 2, 2)
+            .await;
+        match result {
+            Ok(values) => {
+                if let (Some(temperature), Some(minutes)) = (
+                    values
+                        .first()
+                        .and_then(|raw| convert::read_scaled(*raw, scale)),
+                    values
+                        .get(1)
+                        .and_then(|raw| convert::parameter_from_raw(*raw)),
+                ) {
+                    if minutes < 0 {
+                        warn!("curve segment {index} has negative minutes");
+                        sleep(SEGMENT_THROTTLE).await;
+                        return Err(AppError::InvalidData(format!(
+                            "curve segment {index} minutes is negative"
+                        )));
+                    }
+                    if validate::validate_temperature(temperature).is_err() {
+                        warn!("curve segment {index} temperature is out of range");
+                        sleep(SEGMENT_THROTTLE).await;
+                        return Err(AppError::InvalidData(format!(
+                            "curve segment {index} temperature is out of range"
+                        )));
+                    }
+                    segments.push(Segment {
+                        temperature,
+                        minutes: minutes as i32,
+                    });
+                } else {
+                    warn!("curve segment {index} contains invalid data");
+                    sleep(SEGMENT_THROTTLE).await;
+                    return Err(AppError::InvalidData(format!(
+                        "curve segment {index} contains invalid data"
+                    )));
                 }
+            }
+            Err(err) => {
+                warn!("curve segment {index} read failed: {err}");
+                sleep(SEGMENT_THROTTLE).await;
+                return Err(err);
+            }
+        }
+        sleep(SEGMENT_THROTTLE).await;
+    }
+    Ok(segments)
+}
+
+async fn pid_transaction(
+    backend: &mut dyn DeviceBackend,
+    encoded: [u16; 3],
+) -> Result<(), AppError> {
+    let previous: [u16; 3] = backend
+        .read_registers(registers::P, 3)
+        .await?
+        .try_into()
+        .map_err(|_| AppError::InvalidData("PID backup has insufficient data".to_string()))?;
+
+    match write_pid_transaction(backend, encoded).await {
+        Ok(()) => Ok(()),
+        Err(write_error) => {
+            warn!("PID write failed, restoring previous values: {write_error}");
+            match write_pid_transaction(backend, previous).await {
+                Ok(()) => Err(AppError::Backend(format!(
+                    "PID write failed: {write_error}; rollback succeeded"
+                ))),
+                Err(rollback_error) => Err(AppError::Backend(format!(
+                    "PID write failed: {write_error}; rollback failed: {rollback_error}"
+                ))),
+            }
+        }
+    }
+}
+
+async fn curve_transaction(
+    backend: &mut dyn DeviceBackend,
+    scale: convert::ScaleConfig,
+    encoded_segments: &[(u16, u16)],
+) -> Result<(), AppError> {
+    let previous_segments = read_curve(backend, scale).await?;
+    let encoded_previous = encode_segments(&previous_segments, scale)?;
+
+    match write_curve_transaction(backend, encoded_segments).await {
+        Ok(()) => Ok(()),
+        Err(write_error) => {
+            warn!("curve download failed, restoring previous curve: {write_error}");
+            match write_curve_transaction(backend, &encoded_previous).await {
+                Ok(()) => Err(AppError::Backend(format!(
+                    "curve download failed: {write_error}; rollback succeeded"
+                ))),
+                Err(rollback_error) => Err(AppError::Backend(format!(
+                    "curve download failed: {write_error}; rollback failed: {rollback_error}"
+                ))),
             }
         }
     }
@@ -655,14 +868,14 @@ fn encode_segments(
 }
 
 async fn write_curve_transaction(
-    backend: &mut Box<dyn DeviceBackend>,
+    backend: &mut dyn DeviceBackend,
     encoded_segments: &[(u16, u16)],
 ) -> Result<(), AppError> {
     for (index, (temperature, minutes)) in encoded_segments.iter().enumerate() {
         let base = registers::SP_START + index as u16 * 2;
         backend.write_register(base, *temperature).await?;
         backend.write_register(base + 1, *minutes).await?;
-        sleep(Duration::from_millis(50)).await;
+        sleep(SEGMENT_THROTTLE).await;
 
         let values = backend.read_registers(base, 2).await?;
         if values.first().copied() != Some(*temperature) || values.get(1).copied() != Some(*minutes)
@@ -710,6 +923,7 @@ fn unix_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
 
@@ -857,17 +1071,243 @@ mod tests {
         backend: Box<dyn DeviceBackend>,
         info: DeviceInfo,
     ) -> DeviceHandle {
-        let (tx, rx) = mpsc::channel(64);
-        let actor = DeviceActor {
-            mode: BackendMode::Mock,
-            backend: Some(backend),
-            info,
-            dpt_valid: true,
-            curve_verified: false,
-            rx,
-        };
-        tauri::async_runtime::spawn(actor.run());
-        DeviceHandle { tx }
+        let (handle, rx) = DeviceHandle::channel();
+        let mut actor = DeviceActor::new(BackendMode::Mock, rx, handle.in_transaction.clone());
+        actor.backend = Some(backend);
+        actor.info = info;
+        actor.dpt_valid = true;
+        // tokio::spawn (not the Tauri runtime) so paused-time tests drive the actor too.
+        tokio::spawn(actor.run());
+        handle
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Op {
+        Read,
+        Write,
+    }
+
+    struct Delay {
+        op: Option<Op>,
+        addr: Option<u16>,
+        /// 1-based occurrence of (op, addr) to delay; 0 delays every match.
+        nth: usize,
+        duration: Duration,
+    }
+
+    /// Register map shared with the test after the backend moves into the
+    /// actor, with injectable per-operation delays and an operation log.
+    #[derive(Clone, Default)]
+    struct Script {
+        registers: Arc<Mutex<HashMap<u16, u16>>>,
+        log: Arc<Mutex<Vec<(Op, u16)>>>,
+        delays: Arc<Mutex<Vec<Delay>>>,
+    }
+
+    impl Script {
+        fn with_curve(segments: &[(u16, u16)]) -> Self {
+            let script = Self::default();
+            {
+                let mut registers = script.registers.lock().unwrap();
+                registers.insert(registers::PNO, segments.len() as u16);
+                for (index, (temperature, minutes)) in segments.iter().enumerate() {
+                    let base = registers::SP_START + index as u16 * 2;
+                    registers.insert(base, *temperature);
+                    registers.insert(base + 1, *minutes);
+                }
+            }
+            script
+        }
+
+        fn delay(self, op: Option<Op>, addr: Option<u16>, nth: usize, duration: Duration) -> Self {
+            self.delays.lock().unwrap().push(Delay {
+                op,
+                addr,
+                nth,
+                duration,
+            });
+            self
+        }
+
+        fn backend(&self) -> Box<dyn DeviceBackend> {
+            Box::new(ScriptedBackend(self.clone()))
+        }
+
+        fn curve(&self) -> Vec<(u16, u16)> {
+            let registers = self.registers.lock().unwrap();
+            let pno = registers.get(&registers::PNO).copied().unwrap_or(0);
+            (0..pno)
+                .map(|index| {
+                    let base = registers::SP_START + index * 2;
+                    (registers[&base], registers[&(base + 1)])
+                })
+                .collect()
+        }
+
+        fn writes(&self) -> usize {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(op, _)| *op == Op::Write)
+                .count()
+        }
+
+        async fn step(&self, op: Op, addr: u16) {
+            let delay = {
+                let mut log = self.log.lock().unwrap();
+                log.push((op, addr));
+                let occurrence = log.iter().filter(|entry| **entry == (op, addr)).count();
+                self.delays
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|delay| {
+                        delay.op.is_none_or(|expected| expected == op)
+                            && delay.addr.is_none_or(|expected| expected == addr)
+                            && (delay.nth == 0 || delay.nth == occurrence)
+                    })
+                    .map(|delay| delay.duration)
+            };
+            if let Some(duration) = delay {
+                tokio::time::sleep(duration).await;
+            }
+        }
+    }
+
+    struct ScriptedBackend(Script);
+
+    #[async_trait]
+    impl DeviceBackend for ScriptedBackend {
+        async fn connect(&mut self, _cfg: &ConnectionConfig) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn disconnect(&mut self) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn read_registers(&mut self, addr: u16, count: u16) -> Result<Vec<u16>, AppError> {
+            self.0.step(Op::Read, addr).await;
+            let registers = self.0.registers.lock().unwrap();
+            Ok((0..count)
+                .map(|offset| registers.get(&(addr + offset)).copied().unwrap_or(0))
+                .collect())
+        }
+
+        async fn write_register(&mut self, addr: u16, value: u16) -> Result<(), AppError> {
+            self.0.step(Op::Write, addr).await;
+            self.0.registers.lock().unwrap().insert(addr, value);
+            Ok(())
+        }
+    }
+
+    fn segments(values: &[(f64, i32)]) -> Vec<Segment> {
+        values
+            .iter()
+            .map(|(temperature, minutes)| Segment {
+                temperature: *temperature,
+                minutes: *minutes,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hung_write_mid_download_rolls_back_to_the_original_curve() {
+        let original = [(1000, 20), (1500, 30)];
+        let script = Script::with_curve(&original).delay(
+            Some(Op::Write),
+            Some(registers::SP_START + 3),
+            1,
+            Duration::from_secs(60),
+        );
+        let handle = spawn_test_backend(script.backend());
+
+        let result = handle
+            .download_curve(segments(&[(120.0, 10), (80.0, 5)]))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::Backend(message)) if message.contains("rollback succeeded")
+        ));
+        assert_eq!(script.curve(), original);
+        // The hung operation may leave a late reply on the bus, so the link is reset.
+        assert!(!handle.get_info().await.unwrap().connected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_download_beyond_the_old_fixed_budget_still_commits() {
+        // Old budget for one segment was 5 + 2 * 1 = 7 s; backing up five
+        // segments and writing one at 0.9 s per operation takes about 11 s.
+        let script =
+            Script::with_curve(&[(1000, 20); 5]).delay(None, None, 0, Duration::from_millis(900));
+        let handle = spawn_test_backend(script.backend());
+
+        handle
+            .download_curve(segments(&[(120.0, 10)]))
+            .await
+            .unwrap();
+
+        assert_eq!(script.curve(), [(1200, 10)]);
+        assert!(handle.get_info().await.unwrap().connected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transaction_abandoned_while_queued_performs_no_writes() {
+        let script = Script::with_curve(&[(1000, 20)]).delay(
+            Some(Op::Read),
+            Some(registers::PV),
+            1,
+            Duration::from_secs(2),
+        );
+        let handle = spawn_test_backend(script.backend());
+
+        let reading = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.read_reading().await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let write = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .write_pid(PidValues {
+                        p: 12.5,
+                        i: 240,
+                        d: 3.0,
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        write.abort();
+
+        reading.await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(script.writes(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn requests_during_a_write_transaction_are_rejected_as_busy() {
+        let script =
+            Script::with_curve(&[(1000, 20)]).delay(None, None, 0, Duration::from_millis(500));
+        let handle = spawn_test_backend(script.backend());
+
+        let download = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.download_curve(segments(&[(120.0, 10)])).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(matches!(handle.read_reading().await, Err(AppError::Busy)));
+        assert!(matches!(
+            handle.write_setpoint(100.0).await,
+            Err(AppError::Busy)
+        ));
+        download.await.unwrap().unwrap();
+        assert!(handle.read_reading().await.is_ok());
     }
 
     fn mock_connection() -> ConnectionConfig {
