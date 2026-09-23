@@ -20,6 +20,7 @@ export function CurvesPanel() {
       curve: state.curve,
       presets: state.presets,
       setCurve: state.setCurve,
+      setVerifiedCurve: state.setVerifiedCurve,
       setPresets: state.setPresets,
       setError: state.setError,
     })),
@@ -103,6 +104,7 @@ export function CurvesPanel() {
     }
     try {
       await api.downloadCurve(after);
+      store.setVerifiedCurve(after);
       store.setError(undefined);
       await recordAuditEvent({
         action: "curve_download",
@@ -117,6 +119,8 @@ export function CurvesPanel() {
         },
       });
     } catch (error) {
+      // The device drops its verification as soon as a download starts.
+      store.setVerifiedCurve(undefined);
       const message = readableError(error);
       store.setError(message);
       await recordAuditEvent({
