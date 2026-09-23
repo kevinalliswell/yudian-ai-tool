@@ -9,7 +9,6 @@ import type {
   Reading,
   RunStatus,
   Segment,
-  StatusEvent,
   UnlistenFn,
   ValidationLimits,
 } from "@/lib/types";
@@ -23,14 +22,14 @@ let timer: ReturnType<typeof setInterval> | undefined;
 let streamIndex = 0;
 
 const readingListeners = new Set<(payload: Reading) => void>();
-const statusListeners = new Set<(payload: StatusEvent) => void>();
+const statusListeners = new Set<(payload: DeviceInfo) => void>();
 const errorListeners = new Set<(payload: ErrorEvent) => void>();
 
 function emitReading(payload: Reading) {
   for (const listener of readingListeners) listener(payload);
 }
 
-function emitStatus(payload: StatusEvent) {
+function emitStatus(payload: DeviceInfo) {
   for (const listener of statusListeners) listener(payload);
 }
 
@@ -58,7 +57,7 @@ export const mockApi: DeviceApi = {
     connected = true;
     curveVerified = false;
     const info = { ...snapshot.deviceInfo, connected };
-    emitStatus({ connected: true, model: info.modelName });
+    emitStatus(info);
     return info;
   },
 
@@ -66,7 +65,7 @@ export const mockApi: DeviceApi = {
     connected = false;
     curveVerified = false;
     await mockApi.stopMonitoring();
-    emitStatus({ connected: false, model: null });
+    emitStatus({ connected: false, writeEnabled: false, decimalPoint: 1, scaleFactor: 1 });
   },
 
   async getDeviceInfo(): Promise<DeviceInfo> {
@@ -163,7 +162,7 @@ export const mockApi: DeviceApi = {
     return subscribe(readingListeners, callback);
   },
 
-  onStatus(callback: (payload: StatusEvent) => void): Promise<UnlistenFn> {
+  onStatus(callback: (payload: DeviceInfo) => void): Promise<UnlistenFn> {
     return subscribe(statusListeners, callback);
   },
 

@@ -3,14 +3,16 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, timeout, timeout_at, Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::backend::{create_backend, BackendMode, DeviceBackend};
 use crate::error::AppError;
 use crate::modbus::{convert, registers, validate};
-use crate::types::{ConnectionConfig, DeviceInfo, PidValues, Reading, RunStatus, Segment};
+use crate::types::{
+    ConnectionConfig, DeviceInfo, PidValues, Reading, RunStatus, Segment, StatusUpdate,
+};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,23 +29,43 @@ const SEGMENT_THROTTLE: Duration = Duration::from_millis(50);
 pub struct DeviceHandle {
     tx: mpsc::Sender<QueuedRequest>,
     in_transaction: Arc<AtomicBool>,
+    status: watch::Receiver<StatusUpdate>,
+}
+
+/// The actor's ends of the channels shared with its `DeviceHandle`.
+struct ActorChannels {
+    rx: mpsc::Receiver<QueuedRequest>,
+    in_transaction: Arc<AtomicBool>,
+    status: watch::Sender<StatusUpdate>,
 }
 
 impl DeviceHandle {
     pub fn spawn(mode: BackendMode) -> Self {
-        let (handle, rx) = Self::channel();
-        let actor = DeviceActor::new(mode, rx, handle.in_transaction.clone());
-        tauri::async_runtime::spawn(actor.run());
+        let (handle, channels) = Self::channel();
+        tauri::async_runtime::spawn(DeviceActor::new(mode, channels).run());
         handle
     }
 
-    fn channel() -> (Self, mpsc::Receiver<QueuedRequest>) {
+    fn channel() -> (Self, ActorChannels) {
         let (tx, rx) = mpsc::channel(64);
+        let (status_tx, status_rx) = watch::channel(StatusUpdate::default());
+        let in_transaction = Arc::new(AtomicBool::new(false));
         let handle = Self {
             tx,
-            in_transaction: Arc::new(AtomicBool::new(false)),
+            in_transaction: in_transaction.clone(),
+            status: status_rx,
         };
-        (handle, rx)
+        let channels = ActorChannels {
+            rx,
+            in_transaction,
+            status: status_tx,
+        };
+        (handle, channels)
+    }
+
+    /// Connection state as last published by the actor.
+    pub fn subscribe_status(&self) -> watch::Receiver<StatusUpdate> {
+        self.status.clone()
     }
 
     fn is_busy(&self) -> bool {
@@ -362,15 +384,12 @@ struct DeviceActor {
     /// still arrive, so the link is reset once the transaction finishes.
     link_suspect: bool,
     in_transaction: Arc<AtomicBool>,
+    status: watch::Sender<StatusUpdate>,
     rx: mpsc::Receiver<QueuedRequest>,
 }
 
 impl DeviceActor {
-    fn new(
-        mode: BackendMode,
-        rx: mpsc::Receiver<QueuedRequest>,
-        in_transaction: Arc<AtomicBool>,
-    ) -> Self {
+    fn new(mode: BackendMode, channels: ActorChannels) -> Self {
         Self {
             mode,
             backend: None,
@@ -378,9 +397,17 @@ impl DeviceActor {
             dpt_valid: false,
             curve_verified: false,
             link_suspect: false,
-            in_transaction,
-            rx,
+            in_transaction: channels.in_transaction,
+            status: channels.status,
+            rx: channels.rx,
         }
+    }
+
+    fn publish_status(&self, reason: Option<String>) {
+        self.status.send_replace(StatusUpdate {
+            info: self.info.clone(),
+            reason,
+        });
     }
 
     async fn run(mut self) {
@@ -434,6 +461,7 @@ impl DeviceActor {
         self.curve_verified = false;
         self.link_suspect = false;
         warn!("device backend reset: {reason}");
+        self.publish_status(Some(reason.to_string()));
     }
 
     async fn handle_request(&mut self, request: DeviceRequest) {
@@ -541,6 +569,7 @@ impl DeviceActor {
         self.curve_verified = false;
         self.backend = Some(backend);
         info!("device connected: {:?}", self.info.model_name);
+        self.publish_status(None);
         Ok(self.info.clone())
     }
 
@@ -553,6 +582,7 @@ impl DeviceActor {
         self.info = DeviceInfo::default();
         self.dpt_valid = false;
         self.curve_verified = false;
+        self.publish_status(None);
         Ok(())
     }
 
@@ -1071,8 +1101,8 @@ mod tests {
         backend: Box<dyn DeviceBackend>,
         info: DeviceInfo,
     ) -> DeviceHandle {
-        let (handle, rx) = DeviceHandle::channel();
-        let mut actor = DeviceActor::new(BackendMode::Mock, rx, handle.in_transaction.clone());
+        let (handle, channels) = DeviceHandle::channel();
+        let mut actor = DeviceActor::new(BackendMode::Mock, channels);
         actor.backend = Some(backend);
         actor.info = info;
         actor.dpt_valid = true;
@@ -1210,6 +1240,44 @@ mod tests {
                 minutes: *minutes,
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn connect_and_disconnect_publish_status() {
+        let handle = DeviceHandle::spawn(BackendMode::Mock);
+        let mut status = handle.subscribe_status();
+
+        handle.connect(mock_connection()).await.unwrap();
+        status.changed().await.unwrap();
+        {
+            let update = status.borrow_and_update();
+            assert!(update.info.connected);
+            assert_eq!(update.info.model_name.as_deref(), Some("AI-516P"));
+            assert!(update.reason.is_none());
+        }
+
+        handle.disconnect().await.unwrap();
+        status.changed().await.unwrap();
+        assert!(!status.borrow().info.connected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn link_reset_after_timeout_publishes_disconnected_status_with_reason() {
+        let handle = spawn_test_backend(Box::new(SlowBackend));
+        let mut status = handle.subscribe_status();
+
+        assert!(matches!(
+            handle.read_reading().await,
+            Err(AppError::Timeout)
+        ));
+        status.changed().await.unwrap();
+
+        let update = status.borrow();
+        assert!(!update.info.connected);
+        assert!(update
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("timed out")));
     }
 
     #[tokio::test(start_paused = true)]
