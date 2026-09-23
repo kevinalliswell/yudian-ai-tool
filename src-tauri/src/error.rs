@@ -29,6 +29,14 @@ pub enum AppError {
 
     #[error("invalid data: {0}")]
     InvalidData(String),
+
+    #[error("device is busy with a write transaction")]
+    Busy,
+
+    /// The caller stopped waiting while a write transaction was still
+    /// running; the device may hold the old or the new values.
+    #[error("write outcome unknown: {0}")]
+    OutcomeUnknown(String),
 }
 
 impl AppError {
@@ -51,6 +59,8 @@ impl AppError {
             AppError::Modbus(_) => "modbus",
             AppError::Backend(_) => "backend",
             AppError::InvalidData(_) => "invalidData",
+            AppError::Busy => "busy",
+            AppError::OutcomeUnknown(_) => "outcomeUnknown",
         }
     }
 }
@@ -90,6 +100,8 @@ mod tests {
             AppError::Modbus("crc mismatch".to_string()),
             AppError::Backend("actor down".to_string()),
             AppError::InvalidData("PID P has no valid data".to_string()),
+            AppError::Busy,
+            AppError::OutcomeUnknown("curve download still running".to_string()),
         ];
 
         for error in cases {
