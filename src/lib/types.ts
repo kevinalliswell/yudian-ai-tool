@@ -65,10 +65,21 @@ export interface ErrorEvent {
   message: string;
 }
 
+/** Serialized Rust `AppError`: `kind` plus the fields some kinds carry. */
 export interface AppError {
   kind: string;
+  /** English, for logs; the UI localizes by `kind` (see i18n/errors.ts). */
   message?: string;
-  [key: string]: unknown;
+  /** outOfRange */
+  label?: string;
+  value?: number;
+  min?: number;
+  max?: number;
+  /** readOnly / runBlocked */
+  reason?: string;
+  /** writeFailed */
+  operation?: "pid" | "curve";
+  rollback?: "succeeded" | "failed";
 }
 
 export type UnlistenFn = () => void;

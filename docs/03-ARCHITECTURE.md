@@ -43,3 +43,14 @@ React UI -> src/lib/api.ts -> Tauri invoke/event -> Rust DeviceActor -> DeviceBa
 - 曾有调用超时的事务结束后重置链路（迟到的应答可能错位）。
 - 调用方按最坏情况等待（`transaction_ceiling`）；仍未完成返回 `outcomeUnknown`，前端应重新读取设备值。
 - 事务期间其他请求立即返回 `busy`；监控循环遇到 `busy` 只等待下一周期，不计入断线失败。
+
+## 错误契约
+
+Rust `AppError` 序列化为扁平对象 `{ kind, message, ...fields }`：
+
+- `kind`：稳定的 camelCase 判别值，前端据此在 `src/i18n/errors.ts` 中生成中文提示。
+- `message`：英文，仅用于日志与审计，界面不直接展示（未知 kind 时兜底）。
+- 结构化字段：`outOfRange` 带 `label/value/min/max`；`readOnly`、`runBlocked` 带 `reason`；
+  `writeFailed` 带 `operation`（`pid`/`curve`）与 `rollback`（`succeeded`/`failed`）。
+
+回滚结果只读取 `rollback` 字段，不再匹配消息文本。新增错误类型时须同时更新 `kind()`、序列化与前端映射。

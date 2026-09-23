@@ -46,8 +46,14 @@ describe("auditLog", () => {
     expect(entries.map((entry) => entry.outcome)).toEqual(["success", "failure"]);
   });
 
-  it("detects rollback results from serialized backend errors", () => {
-    expect(rollbackStatusFromError({ message: "rollback succeeded" })).toBe("succeeded");
-    expect(rollbackStatusFromError({ message: "rollback failed: timeout" })).toBe("failed");
+  it("reads rollback results from structured backend errors", () => {
+    expect(rollbackStatusFromError({ kind: "writeFailed", rollback: "succeeded" })).toBe(
+      "succeeded",
+    );
+    expect(rollbackStatusFromError({ kind: "writeFailed", rollback: "failed" })).toBe("failed");
+    expect(rollbackStatusFromError({ kind: "outcomeUnknown" })).toBe("unknown");
+    // Rejected before any register was written.
+    expect(rollbackStatusFromError({ kind: "deviceRunning" })).toBe("not_applicable");
+    expect(rollbackStatusFromError(new Error("network"))).toBe("unknown");
   });
 });

@@ -118,13 +118,12 @@ export function recordAuditEvent(
 }
 
 export function rollbackStatusFromError(error: unknown): RollbackStatus {
-  const message =
-    error instanceof Error
-      ? error.message
-      : error && typeof error === "object" && "message" in error
-        ? String(error.message)
-        : String(error);
-  if (message.includes("rollback succeeded")) return "succeeded";
-  if (message.includes("rollback failed")) return "failed";
-  return "unknown";
+  if (!error || typeof error !== "object" || !("kind" in error)) return "unknown";
+  const { kind, rollback } = error as { kind: unknown; rollback?: unknown };
+  if (kind === "writeFailed" && (rollback === "succeeded" || rollback === "failed")) {
+    return rollback;
+  }
+  if (kind === "outcomeUnknown") return "unknown";
+  // Every other backend error is raised before the device is written.
+  return "not_applicable";
 }
