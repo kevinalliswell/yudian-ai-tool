@@ -4,6 +4,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Tailwind 4 moves configuration into CSS and changes the plugin
+      # model; it needs a planned migration, not a routine bump.
+      - dependency-name: tailwindcss
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
