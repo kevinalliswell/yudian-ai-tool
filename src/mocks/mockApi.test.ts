@@ -39,4 +39,17 @@ describe("mockApi", () => {
     await mockApi.downloadCurve([{ temperature: 120, minutes: 10 }]);
     await expect(mockApi.setRunStatus("run")).resolves.toBeUndefined();
   });
+
+  it("rejects curve downloads while a program runs, like the device actor", async () => {
+    await mockApi.connect({ port: "COM_MOCK", slaveAddr: 1, baudrate: 9600 });
+    await mockApi.downloadCurve([{ temperature: 120, minutes: 10 }]);
+    await mockApi.setRunStatus("run");
+
+    await expect(mockApi.downloadCurve([{ temperature: 80, minutes: 5 }])).rejects.toMatchObject({
+      kind: "deviceRunning",
+    });
+
+    await mockApi.setRunStatus("hold");
+    await expect(mockApi.downloadCurve([{ temperature: 80, minutes: 5 }])).resolves.toBeUndefined();
+  });
 });

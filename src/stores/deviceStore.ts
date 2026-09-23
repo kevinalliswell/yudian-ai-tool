@@ -25,6 +25,8 @@ interface DeviceState {
   setpoint: number;
   parameterSync: ParameterSyncState;
   curve: Segment[];
+  /** Curve last downloaded to and verified on the device in this connection. */
+  verifiedCurve?: Segment[];
   presets: CurvePreset[];
   setPorts: (ports: PortInfo[]) => void;
   setConnectionConfig: (config: Partial<ConnectionConfig>) => void;
@@ -38,6 +40,7 @@ interface DeviceState {
   setSetpoint: (setpoint: number) => void;
   setParameterSync: (state: ParameterSyncState) => void;
   setCurve: (curve: Segment[]) => void;
+  setVerifiedCurve: (curve?: Segment[]) => void;
   setPresets: (presets: CurvePreset[]) => void;
   resetConnectionData: () => void;
 }
@@ -57,6 +60,7 @@ const disconnectedData = {
   pid: { p: 0, i: 0, d: 0 },
   setpoint: 100,
   parameterSync: "unknown",
+  verifiedCurve: undefined,
 } satisfies Partial<DeviceState>;
 
 export const useDeviceStore = create<DeviceState>((set) => ({
@@ -102,6 +106,7 @@ export const useDeviceStore = create<DeviceState>((set) => ({
   setSetpoint: (setpoint) => set({ setpoint }),
   setParameterSync: (parameterSync) => set({ parameterSync }),
   setCurve: (curve) => set({ curve }),
+  setVerifiedCurve: (verifiedCurve) => set({ verifiedCurve }),
   setPresets: (presets) => set({ presets }),
   resetConnectionData: () => set({ ...disconnectedData, error: undefined }),
 }));

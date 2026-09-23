@@ -820,11 +820,27 @@ async fn pid_transaction(
     }
 }
 
+/// Rewriting segments under a running program can make it jump mid-curve,
+/// so a download requires the program to be held or stopped first.
+async fn ensure_program_not_running(backend: &mut dyn DeviceBackend) -> Result<(), AppError> {
+    let status = backend
+        .read_registers(registers::SRUN, 1)
+        .await?
+        .first()
+        .and_then(|raw| convert::parameter_from_raw(*raw))
+        .ok_or_else(|| AppError::InvalidData("Srun has no valid data".to_string()))?;
+    if status == RunStatus::Run.register_value() as i16 {
+        return Err(AppError::DeviceRunning);
+    }
+    Ok(())
+}
+
 async fn curve_transaction(
     backend: &mut dyn DeviceBackend,
     scale: convert::ScaleConfig,
     encoded_segments: &[(u16, u16)],
 ) -> Result<(), AppError> {
+    ensure_program_not_running(backend).await?;
     let previous_segments = read_curve(backend, scale).await?;
     let encoded_previous = encode_segments(&previous_segments, scale)?;
 
@@ -1000,6 +1016,7 @@ mod tests {
                     (registers::SP_START + 1, 20),
                     (registers::PV, pv),
                     (registers::SV, sv),
+                    (registers::SRUN, 1),
                 ]),
             }
         }
@@ -1139,6 +1156,8 @@ mod tests {
             let script = Self::default();
             {
                 let mut registers = script.registers.lock().unwrap();
+                // Stopped, so downloads are allowed unless a test says otherwise.
+                registers.insert(registers::SRUN, 1);
                 registers.insert(registers::PNO, segments.len() as u16);
                 for (index, (temperature, minutes)) in segments.iter().enumerate() {
                     let base = registers::SP_START + index as u16 * 2;
@@ -1147,6 +1166,11 @@ mod tests {
                 }
             }
             script
+        }
+
+        fn with_register(self, addr: u16, value: u16) -> Self {
+            self.registers.lock().unwrap().insert(addr, value);
+            self
         }
 
         fn delay(self, op: Option<Op>, addr: Option<u16>, nth: usize, duration: Duration) -> Self {
@@ -1240,6 +1264,31 @@ mod tests {
                 minutes: *minutes,
             })
             .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn download_is_rejected_while_a_program_is_running() {
+        let script = Script::with_curve(&[(1000, 20)]).with_register(registers::SRUN, 0);
+        let handle = spawn_test_backend(script.backend());
+
+        let result = handle.download_curve(segments(&[(120.0, 10)])).await;
+
+        assert!(matches!(result, Err(AppError::DeviceRunning)));
+        assert_eq!(script.writes(), 0);
+        assert_eq!(script.curve(), [(1000, 20)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn download_is_allowed_while_the_program_is_held() {
+        let script = Script::with_curve(&[(1000, 20)]).with_register(registers::SRUN, 2);
+        let handle = spawn_test_backend(script.backend());
+
+        handle
+            .download_curve(segments(&[(120.0, 10)]))
+            .await
+            .unwrap();
+
+        assert_eq!(script.curve(), [(1200, 10)]);
     }
 
     #[tokio::test]

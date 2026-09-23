@@ -33,6 +33,9 @@ pub enum AppError {
     #[error("device is busy with a write transaction")]
     Busy,
 
+    #[error("a program is running; hold (HoLd) or stop it before downloading a curve")]
+    DeviceRunning,
+
     /// The caller stopped waiting while a write transaction was still
     /// running; the device may hold the old or the new values.
     #[error("write outcome unknown: {0}")]
@@ -60,6 +63,7 @@ impl AppError {
             AppError::Backend(_) => "backend",
             AppError::InvalidData(_) => "invalidData",
             AppError::Busy => "busy",
+            AppError::DeviceRunning => "deviceRunning",
             AppError::OutcomeUnknown(_) => "outcomeUnknown",
         }
     }
@@ -101,6 +105,7 @@ mod tests {
             AppError::Backend("actor down".to_string()),
             AppError::InvalidData("PID P has no valid data".to_string()),
             AppError::Busy,
+            AppError::DeviceRunning,
             AppError::OutcomeUnknown("curve download still running".to_string()),
         ];
 
