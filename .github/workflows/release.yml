@@ -1,9 +1,9 @@
 name: Release
 
+# Automatic release on every push to main is paused while the fix roadmap
+# lands; release-please replaces this workflow. Run manually if needed.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: write
