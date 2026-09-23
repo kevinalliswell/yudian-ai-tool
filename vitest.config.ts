@@ -21,10 +21,10 @@ export default defineConfig({
       reporter: ["text-summary", "html"],
       // Floors just under the current baseline; raise them as tests are added.
       thresholds: {
-        statements: 33,
-        branches: 34,
-        functions: 38,
-        lines: 33,
+        statements: 70,
+        branches: 70,
+        functions: 70,
+        lines: 70,
       },
     },
   },
