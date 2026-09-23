@@ -42,8 +42,11 @@ describe("validation schemas", () => {
     ).toBe(false);
     expect(schema.safeParse([{ temperature: 100, minutes: -1 }]).success).toBe(false);
     expect(schema.safeParse([{ temperature: Number.NaN, minutes: 1 }]).success).toBe(false);
-    expect(schema.safeParse([{ temperature: 100, minutes: 65535 }]).success).toBe(true);
-    expect(schema.safeParse([{ temperature: 100, minutes: 65536 }]).success).toBe(false);
+    const { segmentMinutesMax } = limits;
+    expect(schema.safeParse([{ temperature: 100, minutes: segmentMinutesMax }]).success).toBe(true);
+    expect(schema.safeParse([{ temperature: 100, minutes: segmentMinutesMax + 1 }]).success).toBe(
+      false,
+    );
   });
 
   it("rejects non-finite PID values", () => {

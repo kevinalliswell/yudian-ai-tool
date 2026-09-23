@@ -27,7 +27,8 @@ impl Default for ValidationLimits {
             pid_i_max: 9999,
             pid_d_max: 999.9,
             segment_max_count: 50,
-            segment_minutes_max: u16::MAX as i32,
+            // Controller manual: program segment time is 0.1..=3200.
+            segment_minutes_max: 3200,
             slave_addr_min: 1,
             slave_addr_max: 80,
             refresh_interval_min_ms: 200,
@@ -185,15 +186,55 @@ mod tests {
 
         let max_minutes = [Segment {
             temperature: 100.0,
-            minutes: u16::MAX as i32,
+            minutes: 3200,
         }];
         assert!(validate_segments(&max_minutes).is_ok());
 
         let excessive_minutes = [Segment {
             temperature: 100.0,
-            minutes: u16::MAX as i32 + 1,
+            minutes: 3201,
         }];
         assert!(validate_segments(&excessive_minutes).is_err());
+    }
+
+    #[test]
+    fn integer_limits_fit_the_writable_register_range() {
+        let limits = limits();
+        for (label, value) in [
+            ("segment minutes", i64::from(limits.segment_minutes_max)),
+            ("PID I", i64::from(limits.pid_i_max)),
+            ("PID D", (limits.pid_d_max * 10.0).round() as i64),
+            ("segment count", limits.segment_max_count as i64),
+        ] {
+            assert!(
+                crate::modbus::convert::encode_i16(value, label).is_ok(),
+                "{label} limit {value} does not fit the register"
+            );
+        }
+    }
+
+    #[test]
+    fn frontend_mock_snapshot_matches_rust_limits() {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../../src/mocks/snapshots/normal.json"))
+                .expect("snapshot must be valid JSON");
+        let expected = serde_json::to_value(limits()).expect("limits must serialize");
+        let expected = expected.as_object().expect("limits serialize to an object");
+        let actual = snapshot["validationLimits"]
+            .as_object()
+            .expect("snapshot has validationLimits");
+
+        assert_eq!(
+            actual.keys().collect::<Vec<_>>(),
+            expected.keys().collect::<Vec<_>>()
+        );
+        for (key, value) in expected {
+            assert_eq!(
+                actual[key].as_f64(),
+                value.as_f64(),
+                "snapshot validationLimits.{key} drifted from Rust"
+            );
+        }
     }
 
     #[test]
