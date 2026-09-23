@@ -5,13 +5,30 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Reused by the release workflow to gate a release on the full suite.
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to test
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
-  test:
-    name: Lint and test
-    runs-on: windows-latest
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.4
@@ -19,21 +36,55 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm test:coverage
+      - run: pnpm build
+
+  rust:
+    name: Rust
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Frontend lint
-        run: pnpm lint
-      - name: Frontend test
-        run: pnpm test
-      - name: Frontend build
-        run: pnpm build
-      - name: Rust format
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # generate_context! needs frontendDist to exist; the UI is built and
+      # tested in the frontend job.
+      - name: Create frontend dist placeholder
+        shell: bash
+        run: mkdir -p ../dist
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm advisories
+        run: pnpm audit --audit-level moderate
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: RustSec advisories
         working-directory: src-tauri
-        run: cargo fmt --check
-      - name: Rust clippy
-        working-directory: src-tauri
-        run: cargo clippy -- -D warnings
-      - name: Rust test
-        working-directory: src-tauri
-        run: cargo test
+        run: cargo audit

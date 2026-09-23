@@ -1,0 +1,9 @@
+# cargo-audit configuration. Every ignore needs a reason and a revisit condition.
+[advisories]
+ignore = [
+  # rkyv 0.7 is only locked as an optional dependency of rust_decimal
+  # (tauri-plugin-log -> byte-unit -> rust_decimal) whose `rkyv` feature is
+  # disabled, so it is never compiled. Revisit when tauri-plugin-log or
+  # byte-unit updates rust_decimal.
+  "RUSTSEC-2026-0235",
+]
