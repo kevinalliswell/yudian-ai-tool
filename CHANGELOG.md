@@ -2,6 +2,19 @@
 
 自 v0.6.0 起由 [release-please](https://github.com/googleapis/release-please) 根据 Conventional Commits 自动维护；更早的版本由提交历史整理。
 
+## [0.5.1](https://github.com/kevinalliswell/yudian-ai-tool/compare/v0.5.0...v0.5.1) (2026-09-23)
+
+
+### 问题修复
+
+* confirm runs against the verified device curve and block live downloads ([329d94e](https://github.com/kevinalliswell/yudian-ai-tool/commit/329d94ee626c9065edf1ba72f5b15a419468ea90)), closes [#26](https://github.com/kevinalliswell/yudian-ai-tool/issues/26)
+* keep write transactions from being cancelled mid-write ([50e2854](https://github.com/kevinalliswell/yudian-ai-tool/commit/50e285422770bdbeab4ce7d5fd6501c7bb1dce89)), closes [#26](https://github.com/kevinalliswell/yudian-ai-tool/issues/26)
+* publish device status from the actor so link resets reach the UI ([ca16400](https://github.com/kevinalliswell/yudian-ai-tool/commit/ca16400e27fce5eae68fe1cae08a3f4ca1a3bb25)), closes [#26](https://github.com/kevinalliswell/yudian-ai-tool/issues/26)
+* reject register writes that would read back differently ([dc98c8e](https://github.com/kevinalliswell/yudian-ai-tool/commit/dc98c8e3a25c24899e1cc11574832c9204f5ae3c))
+* reject register writes that would read back differently ([8340296](https://github.com/kevinalliswell/yudian-ai-tool/commit/8340296dadd464bc8b60c3e40e90ce4029919d5e)), closes [#26](https://github.com/kevinalliswell/yudian-ai-tool/issues/26)
+* route backend tracing events into the application log ([e7c3e40](https://github.com/kevinalliswell/yudian-ai-tool/commit/e7c3e40ef2215c79799856b518ef9ea4f4502187)), closes [#26](https://github.com/kevinalliswell/yudian-ai-tool/issues/26)
+* validate presets on save, show dPt precision, label curve controls ([5cd3120](https://github.com/kevinalliswell/yudian-ai-tool/commit/5cd3120f8825831936ea35e6fc95a7b42c50cca2)), closes [#26](https://github.com/kevinalliswell/yudian-ai-tool/issues/26)
+
 ## [0.5.0](https://github.com/kevinalliswell/yudian-ai-tool/releases/tag/v0.5.0) (2026-07-11)
 
 ### 新功能
