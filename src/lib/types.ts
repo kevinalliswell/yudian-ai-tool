@@ -60,11 +60,6 @@ export interface Reading {
   ts: number;
 }
 
-export interface StatusEvent {
-  connected: boolean;
-  model?: string | null;
-}
-
 export interface ErrorEvent {
   scope: string;
   message: string;
@@ -94,6 +89,7 @@ export interface DeviceApi {
   startMonitoring: (intervalMs: number) => Promise<void>;
   stopMonitoring: () => Promise<void>;
   onReading: (callback: (payload: Reading) => void) => Promise<UnlistenFn>;
-  onStatus: (callback: (payload: StatusEvent) => void) => Promise<UnlistenFn>;
+  /** Full device info, published by the Rust actor on every connection change. */
+  onStatus: (callback: (payload: DeviceInfo) => void) => Promise<UnlistenFn>;
   onError: (callback: (payload: ErrorEvent) => void) => Promise<UnlistenFn>;
 }

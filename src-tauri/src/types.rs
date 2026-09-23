@@ -81,11 +81,13 @@ pub struct Reading {
     pub ts: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StatusEvent {
-    pub connected: bool,
-    pub model: Option<String>,
+/// Published by the device actor whenever the connection state changes, so
+/// every change (including a link reset) reaches the frontend.
+#[derive(Debug, Clone, Default)]
+pub struct StatusUpdate {
+    pub info: DeviceInfo,
+    /// Why the actor dropped the link on its own, if it did.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

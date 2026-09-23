@@ -29,6 +29,7 @@ interface DeviceState {
   setPorts: (ports: PortInfo[]) => void;
   setConnectionConfig: (config: Partial<ConnectionConfig>) => void;
   setDeviceInfo: (info: DeviceInfo) => void;
+  applyDeviceStatus: (info: DeviceInfo) => void;
   setLimits: (limits: ValidationLimits) => void;
   pushReading: (reading: Reading) => void;
   setError: (error?: string) => void;
@@ -47,6 +48,16 @@ const defaultInfo: DeviceInfo = {
   decimalPoint: 1,
   scaleFactor: 1,
 };
+
+// Everything that only makes sense while a device is connected.
+const disconnectedData = {
+  deviceInfo: defaultInfo,
+  latestReading: undefined,
+  readings: [],
+  pid: { p: 0, i: 0, d: 0 },
+  setpoint: 100,
+  parameterSync: "unknown",
+} satisfies Partial<DeviceState>;
 
 export const useDeviceStore = create<DeviceState>((set) => ({
   ports: [],
@@ -75,6 +86,10 @@ export const useDeviceStore = create<DeviceState>((set) => ({
   setConnectionConfig: (config) =>
     set((state) => ({ connectionConfig: { ...state.connectionConfig, ...config } })),
   setDeviceInfo: (deviceInfo) => set({ deviceInfo }),
+  // The status event carries the actor's full device info. On a drop, keep
+  // the error so the reason (e.g. a link reset) stays visible.
+  applyDeviceStatus: (deviceInfo) =>
+    set(deviceInfo.connected ? { deviceInfo } : { ...disconnectedData, deviceInfo }),
   setLimits: (limits) => set({ limits }),
   pushReading: (reading) =>
     set((state) => ({
@@ -88,14 +103,5 @@ export const useDeviceStore = create<DeviceState>((set) => ({
   setParameterSync: (parameterSync) => set({ parameterSync }),
   setCurve: (curve) => set({ curve }),
   setPresets: (presets) => set({ presets }),
-  resetConnectionData: () =>
-    set({
-      deviceInfo: defaultInfo,
-      latestReading: undefined,
-      readings: [],
-      error: undefined,
-      pid: { p: 0, i: 0, d: 0 },
-      setpoint: 100,
-      parameterSync: "unknown",
-    }),
+  resetConnectionData: () => set({ ...disconnectedData, error: undefined }),
 }));

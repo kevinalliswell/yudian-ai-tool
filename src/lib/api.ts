@@ -11,7 +11,6 @@ import type {
   Reading,
   RunStatus,
   Segment,
-  StatusEvent,
   ValidationLimits,
 } from "@/lib/types";
 import { mockApi } from "@/mocks/mockApi";
@@ -38,8 +37,8 @@ const realApi: DeviceApi = {
   stopMonitoring: () => invoke<void>("stop_monitoring"),
   onReading: async (callback: (payload: Reading) => void) =>
     listen<Reading>("device://reading", (event) => callback(event.payload)),
-  onStatus: async (callback: (payload: StatusEvent) => void) =>
-    listen<StatusEvent>("device://status", (event) => callback(event.payload)),
+  onStatus: async (callback: (payload: DeviceInfo) => void) =>
+    listen<DeviceInfo>("device://status", (event) => callback(event.payload)),
   onError: async (callback: (payload: ErrorEvent) => void) =>
     listen<ErrorEvent>("device://error", (event) => callback(event.payload)),
 };
