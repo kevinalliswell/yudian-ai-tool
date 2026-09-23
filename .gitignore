@@ -27,3 +27,9 @@ target
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+
+# Test coverage
+coverage
