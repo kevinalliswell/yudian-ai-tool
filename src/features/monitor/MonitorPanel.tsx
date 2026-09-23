@@ -10,8 +10,14 @@ export function MonitorPanel() {
   return (
     <div className="grid gap-5">
       <div className="grid gap-3 md:grid-cols-3">
-        <Metric label="PV 测量值" value={formatValue(latestReading?.pv, " ℃")} />
-        <Metric label="SV 给定值" value={formatValue(latestReading?.sv, " ℃")} />
+        <Metric
+          label="PV 测量值"
+          value={formatValue(latestReading?.pv, " ℃", deviceInfo.decimalPoint)}
+        />
+        <Metric
+          label="SV 给定值"
+          value={formatValue(latestReading?.sv, " ℃", deviceInfo.decimalPoint)}
+        />
         <Metric label="MV 输出值" value={formatValue(latestReading?.mv, " %")} />
       </div>
       <div className="rounded-md border bg-background p-4">

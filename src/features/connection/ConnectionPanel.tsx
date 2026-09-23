@@ -206,7 +206,10 @@ function StatusBox() {
         <Row label="型号" value={deviceInfo.modelName || "--"} />
         <Row label="小数点" value={`${deviceInfo.decimalPoint}`} />
         <Row label="缩放" value={`${deviceInfo.scaleFactor}`} />
-        <Row label="最近读数" value={formatValue(latestReading?.pv, " ℃")} />
+        <Row
+          label="最近读数"
+          value={formatValue(latestReading?.pv, " ℃", deviceInfo.decimalPoint)}
+        />
       </div>
     </div>
   );

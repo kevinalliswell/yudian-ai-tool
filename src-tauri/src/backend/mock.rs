@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::backend::DeviceBackend;
 use crate::error::AppError;
 use crate::modbus::registers;
-use crate::types::ConnectionConfig;
+use crate::types::{ConnectionConfig, RunStatus};
 
 pub struct MockBackend {
     registers: HashMap<u16, u16>,
@@ -26,6 +26,7 @@ impl MockBackend {
         registers.insert(registers::P, 120);
         registers.insert(registers::I, 300);
         registers.insert(registers::D, 45);
+        registers.insert(registers::SRUN, RunStatus::Stop.register_value());
         registers.insert(registers::PNO, 3);
         registers.insert(registers::SP_START, 1000);
         registers.insert(registers::SP_START + 1, 20);

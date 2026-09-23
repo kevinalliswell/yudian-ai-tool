@@ -8,7 +8,7 @@ use crate::ports;
 use crate::state::AppState;
 use crate::types::{
     ConnectionConfig, DeviceInfo, ErrorEvent, PidValues, PortInfo, Reading, RunStatus, Segment,
-    StatusEvent,
+    StatusUpdate,
 };
 
 #[tauri::command(rename_all = "camelCase")]
@@ -18,27 +18,16 @@ pub async fn list_serial_ports() -> Result<Vec<PortInfo>, AppError> {
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn connect(
-    app: AppHandle,
     state: State<'_, AppState>,
     cfg: ConnectionConfig,
 ) -> Result<DeviceInfo, AppError> {
-    let info = state.device.connect(cfg).await?;
-    emit_status(&app, &info);
-    Ok(info)
+    state.device.connect(cfg).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppError> {
+pub async fn disconnect(state: State<'_, AppState>) -> Result<(), AppError> {
     stop_monitoring(state.clone()).await?;
-    state.device.disconnect().await?;
-    emit_status(
-        &app,
-        &DeviceInfo {
-            connected: false,
-            ..DeviceInfo::default()
-        },
-    );
-    Ok(())
+    state.device.disconnect().await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -117,6 +106,8 @@ pub async fn start_monitoring(
                     emit_reading(&app, &reading);
                     sleep(interval).await;
                 }
+                // A write transaction owns the bus; the link itself is fine.
+                Err(err) if !counts_as_monitor_failure(&err) => sleep(interval).await,
                 Err(err) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     error!("monitoring read failed: {err}");
@@ -130,16 +121,10 @@ pub async fn start_monitoring(
                         );
                     }
                     if consecutive_failures >= 5 {
+                        // The actor publishes the resulting status itself.
                         if let Err(disconnect_error) = device.disconnect().await {
                             error!("monitoring disconnect failed: {disconnect_error}");
                         }
-                        let _ = app.emit(
-                            "device://status",
-                            StatusEvent {
-                                connected: false,
-                                model: None,
-                            },
-                        );
                         break;
                     }
                     sleep(monitor_backoff(interval, consecutive_failures)).await;
@@ -159,14 +144,19 @@ pub async fn stop_monitoring(state: State<'_, AppState>) -> Result<(), AppError>
     Ok(())
 }
 
-fn emit_status(app: &AppHandle, info: &DeviceInfo) {
-    let _ = app.emit(
-        "device://status",
-        StatusEvent {
-            connected: info.connected,
-            model: info.model_name.clone(),
-        },
-    );
+/// Forwards the actor's connection state to the frontend; the actor is the
+/// only source, so a link reset reaches the UI just like a disconnect.
+pub fn emit_status(app: &AppHandle, update: &StatusUpdate) {
+    let _ = app.emit("device://status", &update.info);
+    if let Some(reason) = &update.reason {
+        let _ = app.emit(
+            "device://error",
+            ErrorEvent {
+                scope: "connection".to_string(),
+                message: reason.clone(),
+            },
+        );
+    }
 }
 
 fn emit_reading(app: &AppHandle, reading: &Reading) {
@@ -177,6 +167,10 @@ fn monitor_backoff(interval: Duration, consecutive_failures: u32) -> Duration {
     let shift = consecutive_failures.saturating_sub(1).min(3);
     let cap = interval.max(Duration::from_secs(30));
     interval.saturating_mul(1u32 << shift).min(cap)
+}
+
+fn counts_as_monitor_failure(error: &AppError) -> bool {
+    !matches!(error, AppError::Busy)
 }
 
 fn should_emit_monitor_error(consecutive_failures: u32) -> bool {
@@ -214,6 +208,13 @@ mod tests {
             monitor_backoff(Duration::from_secs(60), 2),
             Duration::from_secs(60)
         );
+    }
+
+    #[test]
+    fn busy_bus_does_not_count_towards_monitor_disconnect() {
+        assert!(!counts_as_monitor_failure(&AppError::Busy));
+        assert!(counts_as_monitor_failure(&AppError::Timeout));
+        assert!(counts_as_monitor_failure(&AppError::NotConnected));
     }
 
     #[test]

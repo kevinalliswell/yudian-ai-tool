@@ -9,7 +9,6 @@ import type {
   Reading,
   RunStatus,
   Segment,
-  StatusEvent,
   UnlistenFn,
   ValidationLimits,
 } from "@/lib/types";
@@ -19,18 +18,19 @@ let pid: PidValues = { ...snapshot.pid };
 let setpoint = 100;
 let curve: Segment[] = snapshot.segments.map((segment) => ({ ...segment }));
 let curveVerified = false;
+let runStatus: RunStatus = "stop";
 let timer: ReturnType<typeof setInterval> | undefined;
 let streamIndex = 0;
 
 const readingListeners = new Set<(payload: Reading) => void>();
-const statusListeners = new Set<(payload: StatusEvent) => void>();
+const statusListeners = new Set<(payload: DeviceInfo) => void>();
 const errorListeners = new Set<(payload: ErrorEvent) => void>();
 
 function emitReading(payload: Reading) {
   for (const listener of readingListeners) listener(payload);
 }
 
-function emitStatus(payload: StatusEvent) {
+function emitStatus(payload: DeviceInfo) {
   for (const listener of statusListeners) listener(payload);
 }
 
@@ -57,8 +57,9 @@ export const mockApi: DeviceApi = {
     void cfg;
     connected = true;
     curveVerified = false;
+    runStatus = "stop";
     const info = { ...snapshot.deviceInfo, connected };
-    emitStatus({ connected: true, model: info.modelName });
+    emitStatus(info);
     return info;
   },
 
@@ -66,7 +67,7 @@ export const mockApi: DeviceApi = {
     connected = false;
     curveVerified = false;
     await mockApi.stopMonitoring();
-    emitStatus({ connected: false, model: null });
+    emitStatus({ connected: false, writeEnabled: false, decimalPoint: 1, scaleFactor: 1 });
   },
 
   async getDeviceInfo(): Promise<DeviceInfo> {
@@ -101,7 +102,10 @@ export const mockApi: DeviceApi = {
 
   async setRunStatus(status: RunStatus): Promise<void> {
     ensureConnected();
-    if (status !== "run") return;
+    if (status !== "run") {
+      runStatus = status;
+      return;
+    }
     if (!snapshot.deviceInfo.modelName) {
       throw { kind: "invalidData", message: "运行需要受支持的设备型号" };
     }
@@ -121,6 +125,7 @@ export const mockApi: DeviceApi = {
         throw { kind: "invalidData", message: `运行需要 ${label} 在温度范围内` };
       }
     }
+    runStatus = "run";
   },
 
   async uploadCurve(): Promise<Segment[]> {
@@ -130,6 +135,9 @@ export const mockApi: DeviceApi = {
 
   async downloadCurve(segments: Segment[]): Promise<void> {
     ensureConnected();
+    if (runStatus === "run") {
+      throw { kind: "deviceRunning", message: "程序运行中，请先暂停(HoLd)或停止后再下载曲线" };
+    }
     curve = segments.map((segment) => ({ ...segment }));
     curveVerified = true;
   },
@@ -163,7 +171,7 @@ export const mockApi: DeviceApi = {
     return subscribe(readingListeners, callback);
   },
 
-  onStatus(callback: (payload: StatusEvent) => void): Promise<UnlistenFn> {
+  onStatus(callback: (payload: DeviceInfo) => void): Promise<UnlistenFn> {
     return subscribe(statusListeners, callback);
   },
 

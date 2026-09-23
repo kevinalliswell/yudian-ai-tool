@@ -56,19 +56,7 @@ export function AppShell() {
       // mount-time save effect races boot and can overwrite them with [].
       hydrated.current = true;
       unlisteners.push(await api.onReading(actions.pushReading));
-      unlisteners.push(
-        await api.onStatus((event) => {
-          // The status event only carries connected/model, so merge with the
-          // current device info to keep the decimal point / scale / model code
-          // that connect() resolved instead of resetting them to defaults.
-          const current = useDeviceStore.getState().deviceInfo;
-          actions.setDeviceInfo(
-            event.connected
-              ? { ...current, connected: true, modelName: event.model ?? current.modelName }
-              : { connected: false, writeEnabled: false, decimalPoint: 1, scaleFactor: 1 },
-          );
-        }),
-      );
+      unlisteners.push(await api.onStatus(actions.applyDeviceStatus));
       unlisteners.push(await api.onError(actions.setBackendError));
     }
 

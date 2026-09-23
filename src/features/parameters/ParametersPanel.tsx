@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { zhCN } from "@/i18n/zh-CN";
 import { api } from "@/lib/api";
 import { recordAuditEvent, rollbackStatusFromError } from "@/lib/auditLog";
+import { curveTotalMinutes, sameCurve } from "@/lib/curve";
+import { confirmAction } from "@/lib/dialog";
 import type { PidValues, RunStatus } from "@/lib/types";
 import { createPidSchema, createTemperatureSchema } from "@/lib/validation";
 import { useDeviceStore } from "@/stores/deviceStore";
@@ -22,6 +24,7 @@ export function ParametersPanel() {
       pid: state.pid,
       setpoint: state.setpoint,
       curve: state.curve,
+      verifiedCurve: state.verifiedCurve,
       setPid: state.setPid,
       setSetpoint: state.setSetpoint,
       setParameterSync: state.setParameterSync,
@@ -227,10 +230,20 @@ export function ParametersPanel() {
       status,
     };
     if (status === "run") {
-      const totalMinutes = store.curve.reduce((sum, segment) => sum + segment.minutes, 0);
-      const confirmed = window.confirm(
-        `${zhCN.runConfirmation.title}\n${zhCN.runConfirmation.summary(store.curve.length, totalMinutes)}`,
-      );
+      // The device runs what was verified on it, not what the editor shows.
+      const verified = store.verifiedCurve;
+      if (!verified) {
+        store.setError(zhCN.runConfirmation.notVerified);
+        await recordAuditEvent({
+          action: "run_status",
+          outcome: "rejected",
+          details: { ...details, reason: "curve_not_verified" },
+        });
+        return;
+      }
+      const lines = [zhCN.runConfirmation.summary(verified.length, curveTotalMinutes(verified))];
+      if (!sameCurve(verified, store.curve)) lines.push(zhCN.runConfirmation.mismatch);
+      const confirmed = await confirmAction(lines.join("\n"), zhCN.runConfirmation.title);
       if (!confirmed) {
         await recordAuditEvent({
           action: "run_status",

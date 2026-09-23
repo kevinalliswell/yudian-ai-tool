@@ -7,6 +7,7 @@
     "core:default",
     "store:default",
     "log:default",
+    "dialog:allow-confirm",
     "updater:allow-check",
     "updater:allow-download-and-install"
   ]
