@@ -107,22 +107,22 @@ export const mockApi: DeviceApi = {
       return;
     }
     if (!snapshot.deviceInfo.modelName) {
-      throw { kind: "invalidData", message: "运行需要受支持的设备型号" };
+      throw { kind: "runBlocked", reason: "unsupportedModel", message: "run blocked" };
     }
     if (!curveVerified) {
-      throw { kind: "invalidData", message: "运行需要已验证的曲线下载" };
+      throw { kind: "runBlocked", reason: "curveNotVerified", message: "run blocked" };
     }
     const reading = snapshot.readingStream[0];
     const { tempMin, tempMax } = snapshot.validationLimits;
-    for (const [label, value] of [
-      ["PV", reading.pv],
-      ["SV", setpoint],
+    for (const [reason, value] of [
+      ["invalidPv", reading.pv],
+      ["invalidSv", setpoint],
     ] as const) {
       if (typeof value !== "number" || !Number.isFinite(value)) {
-        throw { kind: "invalidData", message: `运行需要有效的 ${label} 数据` };
+        throw { kind: "runBlocked", reason, message: "run blocked" };
       }
       if (value < tempMin || value > tempMax) {
-        throw { kind: "invalidData", message: `运行需要 ${label} 在温度范围内` };
+        throw { kind: "runBlocked", reason, message: "run blocked" };
       }
     }
     runStatus = "run";

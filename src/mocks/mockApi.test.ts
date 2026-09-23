@@ -33,7 +33,8 @@ describe("mockApi", () => {
     await mockApi.connect({ port: "COM_MOCK", slaveAddr: 1, baudrate: 9600 });
 
     await expect(mockApi.setRunStatus("run")).rejects.toMatchObject({
-      kind: "invalidData",
+      kind: "runBlocked",
+      reason: "curveNotVerified",
     });
 
     await mockApi.downloadCurve([{ temperature: 120, minutes: 10 }]);

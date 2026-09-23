@@ -8,7 +8,7 @@ use tokio::time::{sleep, timeout, timeout_at, Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::backend::{create_backend, BackendMode, DeviceBackend};
-use crate::error::AppError;
+use crate::error::{AppError, ReadOnlyReason, RollbackOutcome, RunBlocker, WriteOperation};
 use crate::modbus::{convert, registers, validate};
 use crate::types::{
     ConnectionConfig, DeviceInfo, PidValues, Reading, RunStatus, Segment, StatusUpdate,
@@ -516,13 +516,11 @@ impl DeviceActor {
     fn ensure_writable(&self) -> Result<(), AppError> {
         if !self.info.write_enabled {
             let reason = if !self.dpt_valid {
-                "DPT could not be read"
+                ReadOnlyReason::DptUnavailable
             } else {
-                "its model is not supported"
+                ReadOnlyReason::UnsupportedModel
             };
-            return Err(AppError::InvalidData(format!(
-                "device is read-only because {reason}"
-            )));
+            return Err(AppError::ReadOnly { reason });
         }
         Ok(())
     }
@@ -674,24 +672,25 @@ impl DeviceActor {
         if self.backend.is_none() {
             return Err(AppError::NotConnected);
         }
-        let model_code = self.info.model_code.ok_or_else(|| {
-            AppError::InvalidData("run requires a supported device model".to_string())
-        })?;
-        if !registers::is_supported_model(model_code) {
-            return Err(AppError::InvalidData(format!(
-                "run is not supported for device model {model_code}"
-            )));
+        let blocked = |reason| AppError::RunBlocked { reason };
+        if !self
+            .info
+            .model_code
+            .is_some_and(registers::is_supported_model)
+        {
+            return Err(blocked(RunBlocker::UnsupportedModel));
         }
-
         if !self.curve_verified {
-            return Err(AppError::InvalidData(
-                "run requires a verified curve download".to_string(),
-            ));
+            return Err(blocked(RunBlocker::CurveNotVerified));
         }
 
         let reading = self.read_reading().await?;
-        validate_run_value("PV", reading.pv)?;
-        validate_run_value("SV", reading.sv)?;
+        if !is_valid_run_value(reading.pv) {
+            return Err(blocked(RunBlocker::InvalidPv));
+        }
+        if !is_valid_run_value(reading.sv) {
+            return Err(blocked(RunBlocker::InvalidSv));
+        }
         Ok(())
     }
 
@@ -808,14 +807,8 @@ async fn pid_transaction(
         Ok(()) => Ok(()),
         Err(write_error) => {
             warn!("PID write failed, restoring previous values: {write_error}");
-            match write_pid_transaction(backend, previous).await {
-                Ok(()) => Err(AppError::Backend(format!(
-                    "PID write failed: {write_error}; rollback succeeded"
-                ))),
-                Err(rollback_error) => Err(AppError::Backend(format!(
-                    "PID write failed: {write_error}; rollback failed: {rollback_error}"
-                ))),
-            }
+            let rollback = write_pid_transaction(backend, previous).await;
+            Err(write_failed(WriteOperation::Pid, write_error, rollback))
         }
     }
 }
@@ -848,29 +841,34 @@ async fn curve_transaction(
         Ok(()) => Ok(()),
         Err(write_error) => {
             warn!("curve download failed, restoring previous curve: {write_error}");
-            match write_curve_transaction(backend, &encoded_previous).await {
-                Ok(()) => Err(AppError::Backend(format!(
-                    "curve download failed: {write_error}; rollback succeeded"
-                ))),
-                Err(rollback_error) => Err(AppError::Backend(format!(
-                    "curve download failed: {write_error}; rollback failed: {rollback_error}"
-                ))),
-            }
+            let rollback = write_curve_transaction(backend, &encoded_previous).await;
+            Err(write_failed(WriteOperation::Curve, write_error, rollback))
         }
     }
 }
 
-fn validate_run_value(label: &str, value: Option<f64>) -> Result<(), AppError> {
-    let value =
-        value.ok_or_else(|| AppError::InvalidData(format!("run requires valid {label} data")))?;
-    if !value.is_finite() {
-        return Err(AppError::InvalidData(format!(
-            "run requires finite {label} data"
-        )));
+/// Run needs a live, in-range reading (validate_temperature rejects NaN/inf).
+fn is_valid_run_value(value: Option<f64>) -> bool {
+    value.is_some_and(|value| validate::validate_temperature(value).is_ok())
+}
+
+fn write_failed(
+    operation: WriteOperation,
+    cause: AppError,
+    rollback: Result<(), AppError>,
+) -> AppError {
+    let rollback = match rollback {
+        Ok(()) => RollbackOutcome::Succeeded,
+        Err(error) => {
+            error!("{operation} rollback failed: {error}");
+            RollbackOutcome::Failed(error.to_string())
+        }
+    };
+    AppError::WriteFailed {
+        operation,
+        cause: cause.to_string(),
+        rollback,
     }
-    validate::validate_temperature(value).map_err(|_| {
-        AppError::InvalidData(format!("run requires {label} within the temperature range"))
-    })
 }
 
 fn encode_pid(values: &PidValues, scale: convert::ScaleConfig) -> Result<[u16; 3], AppError> {
@@ -1346,7 +1344,11 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(AppError::Backend(message)) if message.contains("rollback succeeded")
+            Err(AppError::WriteFailed {
+                operation: WriteOperation::Curve,
+                rollback: RollbackOutcome::Succeeded,
+                ..
+            })
         ));
         assert_eq!(script.curve(), original);
         // The hung operation may leave a late reply on the bus, so the link is reset.
@@ -1485,7 +1487,11 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(AppError::Backend(message)) if message.contains("rollback succeeded")
+            Err(AppError::WriteFailed {
+                operation: WriteOperation::Pid,
+                rollback: RollbackOutcome::Succeeded,
+                ..
+            })
         ));
         assert_eq!(
             handle.read_pid().await.unwrap(),
@@ -1639,7 +1645,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(AppError::InvalidData(message)) if message.contains("curve")
+            Err(AppError::RunBlocked {
+                reason: RunBlocker::CurveNotVerified
+            })
         ));
     }
 
@@ -1674,7 +1682,9 @@ mod tests {
         let pv_result = invalid_pv.set_run_status(RunStatus::Run).await;
         assert!(matches!(
             pv_result,
-            Err(AppError::InvalidData(message)) if message.contains("PV")
+            Err(AppError::RunBlocked {
+                reason: RunBlocker::InvalidPv
+            })
         ));
 
         let invalid_sv = spawn_test_backend(Box::new(CurveDataBackend::with_reading(
@@ -1691,7 +1701,9 @@ mod tests {
         let sv_result = invalid_sv.set_run_status(RunStatus::Run).await;
         assert!(matches!(
             sv_result,
-            Err(AppError::InvalidData(message)) if message.contains("SV")
+            Err(AppError::RunBlocked {
+                reason: RunBlocker::InvalidSv
+            })
         ));
     }
 
@@ -1711,7 +1723,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(AppError::InvalidData(message)) if message.contains("model")
+            Err(AppError::RunBlocked {
+                reason: RunBlocker::UnsupportedModel
+            })
         ));
     }
 
@@ -1734,7 +1748,9 @@ mod tests {
         let result = handle.write_setpoint(120.0).await;
         assert!(matches!(
             result,
-            Err(AppError::InvalidData(message)) if message.contains("read-only")
+            Err(AppError::ReadOnly {
+                reason: ReadOnlyReason::DptUnavailable
+            })
         ));
     }
 
@@ -1751,7 +1767,9 @@ mod tests {
         let result = handle.write_setpoint(120.0).await;
         assert!(matches!(
             result,
-            Err(AppError::InvalidData(message)) if message.contains("model")
+            Err(AppError::ReadOnly {
+                reason: ReadOnlyReason::UnsupportedModel
+            })
         ));
     }
 
