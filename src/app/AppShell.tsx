@@ -8,6 +8,7 @@ import { CurvesPanel } from "@/features/curves/CurvesPanel";
 import { MonitorPanel } from "@/features/monitor/MonitorPanel";
 import { ParametersPanel } from "@/features/parameters/ParametersPanel";
 import { readableError } from "@/features/shared/display";
+import { UpdateNotice } from "@/features/updater/UpdateNotice";
 import { zhCN } from "@/i18n/zh-CN";
 import { api, runtimeLabel } from "@/lib/api";
 import { loadCurvePresets, saveCurvePresets } from "@/lib/curveStorage";
@@ -84,6 +85,7 @@ export function AppShell() {
             <p className="mt-1 text-sm text-muted-foreground">{zhCN.subtitle}</p>
           </div>
           <div className="flex items-center gap-2">
+            <UpdateNotice />
             <Badge variant={connected ? "default" : "outline"}>
               {connected ? modelName || "已连接" : "未连接"}
             </Badge>
