@@ -28,7 +28,7 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
     steps:
       - id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -63,13 +63,13 @@ jobs:
       # (it became "AI._0.5.0_..."), so assets get stable ASCII names.
       ASSET_NAME_PATTERN: yudian-ai-tool_[version]_[platform]_[arch][ext]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.sha }}
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
