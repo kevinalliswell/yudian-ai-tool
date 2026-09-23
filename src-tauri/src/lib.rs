@@ -2,6 +2,7 @@ pub mod backend;
 pub mod commands;
 pub mod device;
 pub mod error;
+pub mod logging;
 pub mod modbus;
 pub mod ports;
 pub mod state;
@@ -14,6 +15,13 @@ pub fn run() {
     tauri::Builder::default()
         .manage(state::AppState::new())
         .setup(|app| {
+            let package = app.package_info();
+            tracing::info!(
+                "{} v{} started with {:?} device backend",
+                package.name,
+                package.version,
+                backend::BackendMode::from_env()
+            );
             let mut status = app.state::<state::AppState>().device.subscribe_status();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -26,7 +34,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(logging::plugin())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::list_serial_ports,
