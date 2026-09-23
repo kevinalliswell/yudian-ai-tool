@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Download, Plus, Save, Trash2, Upload } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -25,6 +25,7 @@ export function CurvesPanel() {
       setError: state.setError,
     })),
   );
+  const [presetName, setPresetName] = useState("");
   const totalMinutes = useMemo(
     () => store.curve.reduce((sum, segment) => sum + segment.minutes, 0),
     [store.curve],
@@ -140,13 +141,20 @@ export function CurvesPanel() {
   }
 
   function savePreset() {
+    // Invalid presets are dropped on persist, so reject them visibly here.
+    if (!store.limits || !createCurveSchema(store.limits).safeParse(store.curve).success) {
+      store.setError("曲线段超出范围，无法保存预设");
+      return;
+    }
     const preset: CurvePreset = {
       id: crypto.randomUUID(),
-      name: `曲线 ${store.presets.length + 1}`,
+      name: presetName.trim() || `曲线 ${store.presets.length + 1}`,
       description: `${store.curve.length} 段，${totalMinutes} 分钟`,
       segments: store.curve.map((segment) => ({ ...segment })),
     };
     store.setPresets([preset, ...store.presets]);
+    store.setError(undefined);
+    setPresetName("");
     void recordAuditEvent({
       action: "preset_save",
       outcome: "success",
@@ -159,25 +167,46 @@ export function CurvesPanel() {
     });
   }
 
+  function deletePreset(id: string) {
+    store.setPresets(store.presets.filter((preset) => preset.id !== id));
+  }
+
   return (
     <div className="grid gap-5 xl:grid-cols-[280px_1fr]">
       <div className="rounded-md border bg-background p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="font-medium">曲线预设</p>
-          <Button size="icon" variant="outline" onClick={savePreset}>
-            <Save className="h-4 w-4" />
+        <p className="mb-3 font-medium">曲线预设</p>
+        <div className="mb-3 flex gap-2">
+          <input
+            className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+            aria-label="预设名称"
+            placeholder={`曲线 ${store.presets.length + 1}`}
+            value={presetName}
+            onChange={(event) => setPresetName(event.target.value)}
+          />
+          <Button size="icon" variant="outline" aria-label="保存为预设" onClick={savePreset}>
+            <Save className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>
         <div className="grid gap-2">
           {store.presets.map((preset) => (
-            <button
-              key={preset.id}
-              className="rounded-md border p-3 text-left text-sm hover:bg-muted"
-              onClick={() => store.setCurve(preset.segments.map((segment) => ({ ...segment })))}
-            >
-              <span className="block font-medium">{preset.name}</span>
-              <span className="text-muted-foreground">{preset.description}</span>
-            </button>
+            <div key={preset.id} className="flex items-stretch gap-2">
+              <button
+                className="min-w-0 flex-1 rounded-md border p-3 text-left text-sm hover:bg-muted"
+                onClick={() => store.setCurve(preset.segments.map((segment) => ({ ...segment })))}
+              >
+                <span className="block font-medium">{preset.name}</span>
+                <span className="text-muted-foreground">{preset.description}</span>
+              </button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-auto"
+                aria-label={`删除预设 ${preset.name}`}
+                onClick={() => deletePreset(preset.id)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
           ))}
         </div>
       </div>
@@ -213,6 +242,7 @@ export function CurvesPanel() {
               <input
                 className="h-10 rounded-md border bg-background px-3"
                 type="number"
+                aria-label={`第 ${index + 1} 段温度 (℃)`}
                 value={segment.temperature}
                 onChange={(event) =>
                   updateSegment(index, { temperature: Number(event.target.value) })
@@ -221,11 +251,17 @@ export function CurvesPanel() {
               <input
                 className="h-10 rounded-md border bg-background px-3"
                 type="number"
+                aria-label={`第 ${index + 1} 段时间 (分钟)`}
                 value={segment.minutes}
                 onChange={(event) => updateSegment(index, { minutes: Number(event.target.value) })}
               />
-              <Button variant="outline" size="icon" onClick={() => removeSegment(index)}>
-                <Trash2 className="h-4 w-4" />
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={`删除第 ${index + 1} 段`}
+                onClick={() => removeSegment(index)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
               </Button>
             </div>
           ))}

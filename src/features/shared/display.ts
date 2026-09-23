@@ -1,5 +1,6 @@
-export function formatValue(value: number | null | undefined, suffix: string) {
-  return typeof value === "number" ? `${value.toFixed(1)}${suffix}` : "--";
+/** `decimals` should follow the controller's dPt for values in PV units. */
+export function formatValue(value: number | null | undefined, suffix: string, decimals = 1) {
+  return typeof value === "number" ? `${value.toFixed(decimals)}${suffix}` : "--";
 }
 
 export function readableError(error: unknown) {
