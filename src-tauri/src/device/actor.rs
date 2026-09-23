@@ -327,11 +327,12 @@ impl DeviceActor {
             .as_ref()
             .and_then(|values| values.first().copied())
             .and_then(convert::parameter_from_raw)
-            .map(|value| value as u16);
+            .and_then(|value| u16::try_from(value).ok());
         let dpt_valid = dpt_raw.is_some();
         let scale = convert::parse_dpt(dpt_raw);
-        let model_code =
-            model_raw.and_then(|raw| convert::parameter_from_raw(raw).map(|v| v as u16));
+        let model_code = model_raw
+            .and_then(convert::parameter_from_raw)
+            .and_then(|value| u16::try_from(value).ok());
         let model_name = model_code.map(registers::model_name);
         let write_enabled = dpt_valid
             && model_code
@@ -396,11 +397,13 @@ impl DeviceActor {
             .get(1)
             .and_then(|raw| convert::parameter_from_raw(*raw))
             .ok_or_else(|| AppError::InvalidData("PID I has no valid data".to_string()))?;
+        let i =
+            u32::try_from(i).map_err(|_| AppError::InvalidData("PID I is negative".to_string()))?;
         let d = values
             .get(2)
             .and_then(|raw| convert::d_seconds_from_raw(*raw))
             .ok_or_else(|| AppError::InvalidData("PID D has no valid data".to_string()))?;
-        Ok(PidValues { p, i: i as u32, d })
+        Ok(PidValues { p, i, d })
     }
 
     async fn read_setpoint(&mut self) -> Result<f64, AppError> {
@@ -614,7 +617,7 @@ fn validate_run_value(label: &str, value: Option<f64>) -> Result<(), AppError> {
 fn encode_pid(values: &PidValues, scale: convert::ScaleConfig) -> Result<[u16; 3], AppError> {
     Ok([
         convert::write_scaled(values.p, scale)?,
-        convert::to_uint16(values.i as i32, "PID I")?,
+        convert::encode_i16(i64::from(values.i), "PID I")?,
         convert::d_seconds_to_raw(values.d)?,
     ])
 }
@@ -645,7 +648,7 @@ fn encode_segments(
         .map(|segment| {
             Ok((
                 convert::write_scaled(segment.temperature, scale)?,
-                convert::to_uint16(segment.minutes, "segment minutes")?,
+                convert::encode_i16(i64::from(segment.minutes), "segment minutes")?,
             ))
         })
         .collect()
@@ -670,7 +673,7 @@ async fn write_curve_transaction(
         }
     }
 
-    let pno = convert::to_uint16(encoded_segments.len() as i32, "Pno")?;
+    let pno = convert::encode_i16(encoded_segments.len() as i64, "Pno")?;
     backend.write_register(registers::PNO, pno).await?;
     let committed_pno = backend
         .read_registers(registers::PNO, 1)
@@ -935,6 +938,39 @@ mod tests {
                 d: 4.5,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn pid_read_rejects_negative_integral_time() {
+        let mut backend = FailOnceBackend::new(0);
+        backend.registers.insert(registers::I, 0xFFFF);
+        let handle = spawn_test_backend(Box::new(backend));
+
+        let result = handle.read_pid().await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::InvalidData(message)) if message.contains("PID I")
+        ));
+    }
+
+    #[tokio::test]
+    async fn setpoint_write_rejects_values_that_overflow_the_register() {
+        let handle = spawn_test_backend_with_info(
+            Box::new(CurveDataBackend::with_pno(0)),
+            DeviceInfo {
+                connected: true,
+                write_enabled: true,
+                model_code: Some(registers::MODEL_AI_516P),
+                model_name: Some("AI-516P".to_string()),
+                decimal_point: 2,
+                scale_factor: 1,
+            },
+        );
+
+        let result = handle.write_setpoint(400.0).await;
+
+        assert!(matches!(result, Err(AppError::OutOfRange { .. })));
     }
 
     #[tokio::test]
