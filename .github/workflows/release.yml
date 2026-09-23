@@ -1,93 +1,53 @@
 name: Release
 
-# Automatic release on every push to main is paused while the fix roadmap
-# lands; release-please replaces this workflow. Run manually if needed.
+# release-please keeps a release PR up to date from Conventional Commits.
+# Merging that PR creates a draft release and its tag; the draft is only
+# published after the full CI suite passes on the release commit and the
+# uploaded artifacts (installers, signatures, latest.json) are verified.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  determine-version:
-    name: Determine version
+  release-please:
+    name: Release PR / draft
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      should_release: ${{ steps.version.outputs.should_release }}
-      release_sha: ${{ steps.commit.outputs.release_sha }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      id: ${{ steps.release.outputs.id }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - id: release
+        uses: googleapis/release-please-action@v4
         with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - id: version
-        shell: bash
-        run: |
-          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
-          current="$(node -p "require('./package.json').version")"
-          range="${latest:+$latest..HEAD}"
-          commits="$(git log --format=%B $range)"
-          bump="skip"
-          if echo "$commits" | grep -Eq '(^|[[:space:]])BREAKING CHANGE|^[a-z]+!:'; then bump="major"; fi
-          if [ "$bump" = "skip" ] && echo "$commits" | grep -Eq '^feat(\(.+\))?:'; then bump="minor"; fi
-          if [ "$bump" = "skip" ] && echo "$commits" | grep -Eq '^(fix|perf|refactor)(\(.+\))?:'; then bump="patch"; fi
-          if [ -z "$latest" ]; then bump="minor"; fi
-          if [ "$bump" = "skip" ]; then
-            echo "version=$current" >> "$GITHUB_OUTPUT"
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          node - "$current" "$bump" <<'NODE'
-          const fs = require('fs');
-          const [current, bump] = process.argv.slice(2);
-          const parts = current.split('.').map(Number);
-          if (bump === 'major') { parts[0] += 1; parts[1] = 0; parts[2] = 0; }
-          if (bump === 'minor') { parts[1] += 1; parts[2] = 0; }
-          if (bump === 'patch') { parts[2] += 1; }
-          const version = parts.join('.');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          pkg.version = version;
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          const cargoToml = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
-            .replace(/^version = ".+"$/m, `version = "${version}"`);
-          fs.writeFileSync('src-tauri/Cargo.toml', cargoToml);
-          const cargoLock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8')
-            .replace(
-              /(\[\[package\]\]\nname = "yudian-ai-tool"\nversion = ").+(")/,
-              `$1${version}$2`,
-            );
-          fs.writeFileSync('src-tauri/Cargo.lock', cargoLock);
-          const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-          conf.version = version;
-          conf.plugins ??= {};
-          conf.plugins.updater ??= {};
-          conf.plugins.updater.endpoints = [
-            `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/latest/download/latest.json`,
-          ];
-          fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
-          fs.appendFileSync('CHANGELOG.md', `\n## v${version}\n\n- Automated release from Conventional Commits.\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nshould_release=true\n`);
-          NODE
-      - name: Commit version bump
-        id: commit
-        if: steps.version.outputs.should_release == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json CHANGELOG.md
-          git commit -m "chore(release): v${{ steps.version.outputs.version }} [skip ci]"
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin HEAD:main
-          git push origin "v${{ steps.version.outputs.version }}"
-          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  test:
+    name: Gate
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.release-please.outputs.sha }}
 
   build:
     name: Build ${{ matrix.platform }}
-    needs: determine-version
-    if: needs.determine-version.outputs.should_release == 'true'
+    needs: [release-please, test]
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -99,10 +59,13 @@ jobs:
     runs-on: ${{ matrix.platform }}
     env:
       HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      # The product name is Chinese; GitHub would mangle it in asset names
+      # (it became "AI._0.5.0_..."), so assets get stable ASCII names.
+      ASSET_NAME_PATTERN: yudian-ai-tool_[version]_[platform]_[arch][ext]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.determine-version.outputs.release_sha }}
+          ref: ${{ needs.release-please.outputs.sha }}
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.4
@@ -127,11 +90,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v${{ needs.determine-version.outputs.version }}
-          releaseName: 宇电 AI 温控工具 v${{ needs.determine-version.outputs.version }}
-          releaseBody: Automated desktop release.
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.release-please.outputs.id }}
+          releaseAssetNamePattern: ${{ env.ASSET_NAME_PATTERN }}
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
@@ -143,11 +103,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v${{ needs.determine-version.outputs.version }}
-          releaseName: 宇电 AI 温控工具 v${{ needs.determine-version.outputs.version }}
-          releaseBody: Automated desktop release.
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.release-please.outputs.id }}
+          releaseAssetNamePattern: ${{ env.ASSET_NAME_PATTERN }}
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
@@ -165,11 +122,65 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: v${{ needs.determine-version.outputs.version }}
-          releaseName: 宇电 AI 温控工具 v${{ needs.determine-version.outputs.version }}
-          releaseBody: Automated desktop release.
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.release-please.outputs.id }}
+          releaseAssetNamePattern: ${{ env.ASSET_NAME_PATTERN }}
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+  publish:
+    name: Verify artifacts and publish
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      # A green build is not proof the release is usable: check that every
+      # installer, signature and the updater manifest actually got uploaded.
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets > "$RUNNER_TEMP/assets.json"
+          gh release download "$TAG" --pattern latest.json --dir "$RUNNER_TEMP" --clobber
+          node - <<'NODE'
+          const fs = require("fs");
+          const dir = process.env.RUNNER_TEMP;
+          const assets = JSON.parse(fs.readFileSync(`${dir}/assets.json`, "utf8")).assets;
+          const names = assets.map((asset) => asset.name);
+          const fail = (message) => { console.error(`::error::${message}`); process.exit(1); };
+          console.log(names.join("\n"));
+
+          const unexpected = names.filter(
+            (name) => name !== "latest.json" && !/^yudian-ai-tool_[0-9A-Za-z._-]+$/.test(name),
+          );
+          if (unexpected.length) fail(`unexpected asset names: ${unexpected.join(", ")}`);
+          for (const suffix of [".exe", ".exe.sig", ".dmg", ".app.tar.gz", ".app.tar.gz.sig"]) {
+            if (!names.some((name) => name.endsWith(suffix))) fail(`missing *${suffix}`);
+          }
+
+          const manifest = JSON.parse(fs.readFileSync(`${dir}/latest.json`, "utf8"));
+          if (manifest.version !== process.env.VERSION) {
+            fail(`latest.json version ${manifest.version} != ${process.env.VERSION}`);
+          }
+          const platforms = Object.entries(manifest.platforms ?? {});
+          if (!platforms.some(([key]) => key.startsWith("windows"))) fail("latest.json lacks windows");
+          if (!platforms.some(([key]) => key.startsWith("darwin"))) fail("latest.json lacks darwin");
+          for (const [platform, { url, signature }] of platforms) {
+            if (!signature) fail(`${platform} has no signature`);
+            const known = assets.some(
+              (asset) =>
+                asset.apiUrl === url ||
+                asset.url === url ||
+                asset.name === decodeURIComponent(url.split("/").pop()),
+            );
+            if (!known) fail(`${platform} points to ${url}, which is not a release asset`);
+          }
+          console.log(`verified ${names.length} assets and ${platforms.length} updater platforms`);
+          NODE
+      - name: Publish release
+        run: gh release edit "$TAG" --draft=false --latest

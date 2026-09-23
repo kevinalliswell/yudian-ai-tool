@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.3.0/schemas/config.json",
+  "release-type": "node",
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "draft": true,
+  "force-tag-creation": true,
+  "bootstrap-sha": "8a52a3a9868433753ad1e2c9a244a0293e85c3cf",
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "新功能"
+    },
+    {
+      "type": "fix",
+      "section": "问题修复"
+    },
+    {
+      "type": "perf",
+      "section": "性能优化"
+    },
+    {
+      "type": "refactor",
+      "section": "重构"
+    },
+    {
+      "type": "revert",
+      "section": "回退"
+    },
+    {
+      "type": "docs",
+      "section": "文档",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "section": "测试",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "section": "CI",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "section": "杂项",
+      "hidden": true
+    }
+  ],
+  "packages": {
+    ".": {
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "src-tauri/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "src-tauri/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'yudian-ai-tool')].version"
+        },
+        {
+          "type": "json",
+          "path": "src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}
